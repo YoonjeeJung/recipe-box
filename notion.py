@@ -19,12 +19,16 @@ def _get_db_id() -> str:
     return raw
 
 
+# ---------------------------------------------------------------------------
+# Block helpers
+# ---------------------------------------------------------------------------
+
 def _rt(content: str) -> list:
     return [{"type": "text", "text": {"content": content[:2000]}}]
 
 
-def _h2(text: str) -> dict:
-    return {"object": "block", "type": "heading_2", "heading_2": {"rich_text": _rt(text)}}
+def _h3(text: str) -> dict:
+    return {"object": "block", "type": "heading_3", "heading_3": {"rich_text": _rt(text)}}
 
 
 def _paragraph(text: str) -> dict:
@@ -39,32 +43,82 @@ def _numbered(text: str) -> dict:
     return {"object": "block", "type": "numbered_list_item", "numbered_list_item": {"rich_text": _rt(text)}}
 
 
-def _bookmark(url: str) -> dict:
-    return {"object": "block", "type": "bookmark", "bookmark": {"url": url}}
+def _callout(text: str, emoji: str = "💡") -> dict:
+    return {
+        "object": "block",
+        "type": "callout",
+        "callout": {
+            "rich_text": _rt(text),
+            "icon": {"type": "emoji", "emoji": emoji},
+        },
+    }
 
 
-def _build_children(type_: str, summary: str, url: str, ingredients: list, steps: list) -> list:
+def _image_block(url: str) -> dict:
+    return {
+        "object": "block",
+        "type": "image",
+        "image": {
+            "type": "external",
+            "external": {"url": url},
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Page body builder
+# ---------------------------------------------------------------------------
+
+def _build_children(
+    type_: str,
+    summary: str,
+    ingredients: list,
+    steps: list,
+    restaurants: list,
+    cover_image_url: str = "",
+) -> list:
     blocks = []
 
-    if summary:
-        blocks.append(_h2("요약"))
-        blocks.append(_paragraph(summary))
+    # 대표 이미지 (최상단)
+    if cover_image_url:
+        blocks.append(_image_block(cover_image_url))
 
     if type_ == "Recipe":
+        if summary:
+            blocks.append(_callout(summary))
         if ingredients:
-            blocks.append(_h2("재료"))
+            blocks.append(_h3("재료"))
             for ing in ingredients:
                 blocks.append(_bullet(ing))
         if steps:
-            blocks.append(_h2("조리 순서"))
+            blocks.append(_h3("조리 순서"))
             for step in steps:
                 blocks.append(_numbered(step))
 
-    blocks.append(_h2("원본 링크"))
-    blocks.append(_bookmark(url))
+    elif type_ in ("Restaurant", "Cafe"):
+        if summary:
+            blocks.append(_callout(summary))
+        for r in restaurants:
+            name = r.get("name", "")
+            menu = r.get("menu", "")
+            address = r.get("address", "")
+            if name:
+                blocks.append(_h3(name))
+            if menu:
+                blocks.append(_paragraph(f"대표메뉴: {menu}"))
+            if address:
+                blocks.append(_paragraph(f"위치: {address}"))
+
+    else:  # Article, Video, Product, Other
+        if summary:
+            blocks.append(_callout(summary))
 
     return blocks
 
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def save(
     url: str,
@@ -76,6 +130,8 @@ def save(
     location: str,
     ingredients: list[str] | None = None,
     steps: list[str] | None = None,
+    restaurants: list[dict] | None = None,
+    cover_image_url: str = "",
 ) -> str:
     client = _get_client()
     db_id = _get_db_id()
@@ -95,9 +151,18 @@ def save(
     if location:
         properties["Location"] = {"rich_text": [{"text": {"content": location}}]}
 
+    children = _build_children(
+        type_,
+        summary,
+        ingredients or [],
+        steps or [],
+        restaurants or [],
+        cover_image_url,
+    )
+
     page = client.pages.create(
         parent={"database_id": db_id},
         properties=properties,
-        children=_build_children(type_, summary, url, ingredients or [], steps or []),
+        children=children,
     )
     return page["id"]

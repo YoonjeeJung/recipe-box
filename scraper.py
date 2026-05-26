@@ -53,8 +53,10 @@ def scrape(url: str) -> dict:
     # ── Stage 1: 텍스트 ─────────────────────────────────────────────────────
     result = _scrape_text(url, source)
     image_urls: list[str] = result.pop("_image_urls", [])
+    cover_image_url: str = image_urls[0] if image_urls else ""
 
     if _is_sufficient(result["text"]):
+        result["cover_image_url"] = cover_image_url
         return result
 
     # ── Stage 2: 이미지 OCR ─────────────────────────────────────────────────
@@ -65,6 +67,7 @@ def scrape(url: str) -> dict:
             if ocr:
                 result["text"] = _join(result["text"], ocr)
                 if _is_sufficient(result["text"]):
+                    result["cover_image_url"] = cover_image_url
                     return result
         except Exception:
             pass
@@ -77,6 +80,7 @@ def scrape(url: str) -> dict:
     except Exception:
         pass
 
+    result["cover_image_url"] = cover_image_url
     return result
 
 
@@ -99,11 +103,12 @@ def _scrape_youtube(url: str) -> dict:
         data = resp.json()
         title = data.get("title", "")
         author = data.get("author_name", "")
+        thumbnail = data.get("thumbnail_url", "")
         return {
             "title": title,
             "description": author,
             "text": f"{title}\n{author}",
-            "_image_urls": [],
+            "_image_urls": [thumbnail] if thumbnail else [],
         }
     except Exception:
         pass

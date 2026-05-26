@@ -50,9 +50,11 @@ async def save_link(req: SaveRequest):
 
     # 스크래핑 — 실패해도 URL만으로 저장 계속 진행
     scraped_text = ""
+    cover_image_url = ""
     try:
         scraped = scraper.scrape(url)
         scraped_text = scraped.get("text", "")
+        cover_image_url = scraped.get("cover_image_url", "")
         if scraped.get("error"):
             warning = f"스크래핑 부분 실패: {scraped['error']}"
             logger.warning("scrape partial failure url=%s error=%s", url, scraped["error"])
@@ -61,7 +63,7 @@ async def save_link(req: SaveRequest):
         logger.error("scrape failed url=%s error=%s", url, e)
 
     # AI 분석 — 텍스트가 없으면 URL만 전달, 실패 시 기본값으로 계속 진행
-    analysis: dict = {"title": "", "summary": "", "type": "Other", "tags": [], "location": "", "ingredients": [], "steps": []}
+    analysis: dict = {"title": "", "summary": "", "type": "Other", "tags": [], "location": "", "ingredients": [], "steps": [], "restaurants": []}
     try:
         analysis = ai.analyze(url, scraped_text or url)
     except Exception as e:
@@ -81,6 +83,8 @@ async def save_link(req: SaveRequest):
             location=analysis.get("location", ""),
             ingredients=analysis.get("ingredients", []),
             steps=analysis.get("steps", []),
+            restaurants=analysis.get("restaurants", []),
+            cover_image_url=cover_image_url,
         )
     except Exception as e:
         logger.error("notion save failed url=%s error=%s", url, e)
