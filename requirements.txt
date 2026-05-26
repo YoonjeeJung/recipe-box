@@ -1,0 +1,8 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-dotenv==1.0.1
+requests==2.32.3
+beautifulsoup4==4.12.3
+anthropic==0.40.0
+notion-client==2.2.1
+yt-dlp==2024.11.18
