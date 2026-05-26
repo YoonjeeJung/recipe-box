@@ -1,4 +1,4 @@
-import re
+import time
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
@@ -10,6 +10,8 @@ HEADERS = {
         "Chrome/120.0.0.0 Safari/537.36"
     )
 }
+
+_RETRYABLE = (requests.ConnectionError, requests.Timeout)
 
 
 def detect_source(url: str) -> str:
@@ -36,11 +38,34 @@ def scrape(url: str) -> dict:
     return _scrape_web(url)
 
 
+def _get_with_retry(url: str, *, timeout: int = 10, **kwargs) -> requests.Response:
+    delay = 1
+    last_exc: Exception = RuntimeError("unreachable")
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, timeout=timeout, **kwargs)
+            resp.raise_for_status()
+            return resp
+        except _RETRYABLE as e:
+            last_exc = e
+            if attempt < 2:
+                time.sleep(delay)
+                delay *= 2
+        except requests.HTTPError as e:
+            # 5xx는 재시도, 4xx는 즉시 포기
+            if e.response is not None and e.response.status_code < 500:
+                raise
+            last_exc = e
+            if attempt < 2:
+                time.sleep(delay)
+                delay *= 2
+    raise last_exc
+
+
 def _scrape_youtube(url: str) -> dict:
     oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
     try:
-        resp = requests.get(oembed_url, timeout=10)
-        resp.raise_for_status()
+        resp = _get_with_retry(oembed_url)
         data = resp.json()
         return {
             "title": data.get("title", ""),
@@ -53,26 +78,14 @@ def _scrape_youtube(url: str) -> dict:
 
 
 def _scrape_instagram(url: str) -> dict:
-    oembed_url = f"https://graph.facebook.com/v18.0/instagram_oembed?url={url}&format=json"
-    try:
-        resp = requests.get(oembed_url, timeout=10, headers=HEADERS)
-        if resp.status_code == 200:
-            data = resp.json()
-            return {
-                "title": data.get("title", ""),
-                "description": "",
-                "text": data.get("title", ""),
-            }
-    except Exception:
-        pass
+    # Instagram oEmbed는 인증 없이 불안정 — 바로 일반 웹 스크래핑으로 fallback
     return _scrape_web(url)
 
 
 def _scrape_oembed(url: str, template: str) -> dict:
     oembed_url = template.format(url=url)
     try:
-        resp = requests.get(oembed_url, timeout=10, headers=HEADERS)
-        resp.raise_for_status()
+        resp = _get_with_retry(oembed_url, headers=HEADERS)
         data = resp.json()
         title = data.get("title", "")
         author = data.get("author_name", "")
@@ -88,10 +101,9 @@ def _scrape_oembed(url: str, template: str) -> dict:
 
 def _scrape_web(url: str) -> dict:
     try:
-        resp = requests.get(url, timeout=15, headers=HEADERS)
-        resp.raise_for_status()
+        resp = _get_with_retry(url, timeout=15, headers=HEADERS)
     except Exception as e:
-        return {"title": "", "description": "", "text": f"스크래핑 실패: {e}"}
+        return {"title": "", "description": "", "text": "", "error": str(e)}
 
     soup = BeautifulSoup(resp.text, "html.parser")
 

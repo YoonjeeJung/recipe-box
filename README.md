@@ -95,9 +95,12 @@ curl -X POST http://localhost:8000/save \
   "summary": "...",
   "tags": ["Coffee", "Korean"],
   "type": "Cafe",
-  "source": "Instagram"
+  "source": "Instagram",
+  "warning": ""
 }
 ```
+
+> `warning` 필드: 스크래핑/AI가 부분 실패해도 노션에는 저장되며 실패 사유가 담깁니다.
 
 ### `GET /health`
 
@@ -111,14 +114,32 @@ curl -X POST http://localhost:8000/save \
 
 ## iOS 단축어 설정
 
-1. 단축어 앱에서 새 단축어 생성
-2. **URL 가져오기** 액션 추가
-3. **URL 내용 가져오기** 액션 추가:
-   - 방법: POST
-   - 헤더: `Content-Type: application/json`
-   - 본문: JSON → `{"url": "단축어 입력"}`
+### 액션 순서
+
+1. **단축어 앱** → 우상단 `+` → 새 단축어
+2. 액션 추가: **"단축어 입력 가져오기"**
+   - 입력 유형: `URL`
+   - 공유 시트에서 표시: ON
+3. 액션 추가: **"URL 내용 가져오기"** (Get Contents of URL)
    - URL: `https://your-app.railway.app/save`
-4. 공유 시트에서 실행 가능하도록 설정
+   - 방법: `POST`
+   - 헤더: `Content-Type` → `application/json`
+   - 요청 본문: `JSON` 선택 후 키-값 추가
+     - 키: `url` / 값: `단축어 입력` (마법 변수)
+4. 액션 추가: **"알림 표시"** (선택)
+   - 메시지: `URL 내용 가져오기`의 `title` 필드 → 저장 완료 확인용
+
+### 공유 시트 등록
+
+단축어 설정(슬라이더 아이콘) → **공유 시트에서 표시** ON → 입력 유형 `URL` 선택
+
+이후 Safari·크롬 등에서 공유 버튼 → 단축어 앱 → 해당 단축어 탭 한 번으로 저장됩니다.
+
+### 응답 예시 (알림 메시지용)
+
+```
+을지로 카페 추천 — 저장 완료
+```
 
 ## 레포지토리 구조
 
@@ -140,7 +161,7 @@ link-collector/
 |------|------|------|
 | 일반 웹 | BeautifulSoup (og 태그 + 본문) | ✅ 안정 |
 | YouTube | oEmbed API | ✅ 안정 |
-| Instagram | 공개 oEmbed | ⚠️ 불안정 |
+| Instagram | og 태그 fallback | ⚠️ 제한적 |
 | TikTok | oEmbed API | 🟡 제한적 |
 
 > ⚠️ Instagram 스크래핑은 공개 계정만 가능하며 이용약관 위반 위험이 있습니다.
