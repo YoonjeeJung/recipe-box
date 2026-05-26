@@ -41,10 +41,14 @@ URL: {url}
   "summary": "3줄 요약 (각 줄은 핵심 정보 위주)",
   "type": "{types_hint} 중 하나",
   "tags": ["태그1", "태그2"],
-  "location": "장소명 또는 주소 (없으면 빈 문자열)"
+  "location": "장소명 또는 주소 (없으면 빈 문자열)",
+  "ingredients": ["재료1 분량", "재료2 분량"],
+  "steps": ["조리 단계1", "조리 단계2"]
 }}
 
-태그 참고 목록 (이 중에서 최대 5개, 없으면 새로 만들어도 됨): {tags_hint}"""
+태그 참고 목록 (이 중에서 최대 5개, 없으면 새로 만들어도 됨): {tags_hint}
+
+type이 Recipe일 때만 ingredients와 steps를 채워. 나머지 type은 빈 배열로."""
 
     client = _get_client()
     response = client.messages.create(
@@ -77,6 +81,8 @@ URL: {url}
     result.setdefault("type", "Other")
     result.setdefault("tags", [])
     result.setdefault("location", "")
+    result.setdefault("ingredients", [])
+    result.setdefault("steps", [])
 
     if result["type"] not in ALLOWED_TYPES:
         result["type"] = "Other"

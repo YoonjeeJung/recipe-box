@@ -61,7 +61,7 @@ async def save_link(req: SaveRequest):
         logger.error("scrape failed url=%s error=%s", url, e)
 
     # AI 분석 — 텍스트가 없으면 URL만 전달, 실패 시 기본값으로 계속 진행
-    analysis: dict = {"title": "", "summary": "", "type": "Other", "tags": [], "location": ""}
+    analysis: dict = {"title": "", "summary": "", "type": "Other", "tags": [], "location": "", "ingredients": [], "steps": []}
     try:
         analysis = ai.analyze(url, scraped_text or url)
     except Exception as e:
@@ -79,6 +79,8 @@ async def save_link(req: SaveRequest):
             type_=analysis["type"],
             tags=analysis["tags"],
             location=analysis.get("location", ""),
+            ingredients=analysis.get("ingredients", []),
+            steps=analysis.get("steps", []),
         )
     except Exception as e:
         logger.error("notion save failed url=%s error=%s", url, e)

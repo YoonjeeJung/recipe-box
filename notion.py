@@ -19,6 +19,53 @@ def _get_db_id() -> str:
     return raw
 
 
+def _rt(content: str) -> list:
+    return [{"type": "text", "text": {"content": content[:2000]}}]
+
+
+def _h2(text: str) -> dict:
+    return {"object": "block", "type": "heading_2", "heading_2": {"rich_text": _rt(text)}}
+
+
+def _paragraph(text: str) -> dict:
+    return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": _rt(text)}}
+
+
+def _bullet(text: str) -> dict:
+    return {"object": "block", "type": "bulleted_list_item", "bulleted_list_item": {"rich_text": _rt(text)}}
+
+
+def _numbered(text: str) -> dict:
+    return {"object": "block", "type": "numbered_list_item", "numbered_list_item": {"rich_text": _rt(text)}}
+
+
+def _bookmark(url: str) -> dict:
+    return {"object": "block", "type": "bookmark", "bookmark": {"url": url}}
+
+
+def _build_children(type_: str, summary: str, url: str, ingredients: list, steps: list) -> list:
+    blocks = []
+
+    if summary:
+        blocks.append(_h2("요약"))
+        blocks.append(_paragraph(summary))
+
+    if type_ == "Recipe":
+        if ingredients:
+            blocks.append(_h2("재료"))
+            for ing in ingredients:
+                blocks.append(_bullet(ing))
+        if steps:
+            blocks.append(_h2("조리 순서"))
+            for step in steps:
+                blocks.append(_numbered(step))
+
+    blocks.append(_h2("원본 링크"))
+    blocks.append(_bookmark(url))
+
+    return blocks
+
+
 def save(
     url: str,
     source: str,
@@ -27,6 +74,8 @@ def save(
     type_: str,
     tags: list[str],
     location: str,
+    ingredients: list[str] | None = None,
+    steps: list[str] | None = None,
 ) -> str:
     client = _get_client()
     db_id = _get_db_id()
@@ -49,5 +98,6 @@ def save(
     page = client.pages.create(
         parent={"database_id": db_id},
         properties=properties,
+        children=_build_children(type_, summary, url, ingredients or [], steps or []),
     )
     return page["id"]
