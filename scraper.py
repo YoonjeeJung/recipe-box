@@ -1,4 +1,8 @@
+import os
+import re
 import time
+import base64
+import tempfile
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
@@ -11,8 +15,18 @@ HEADERS = {
     )
 }
 
+# 이 길이 이상이면 다음 단계(이미지/영상) 건너뜀
+SUFFICIENT_TEXT_LEN = 150
+
 _RETRYABLE = (requests.ConnectionError, requests.Timeout)
 
+# faster-whisper 모델은 첫 호출 시 한 번만 로드
+_whisper_model = None
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def detect_source(url: str) -> str:
     host = urlparse(url).netloc.lower()
@@ -28,38 +42,54 @@ def detect_source(url: str) -> str:
 
 
 def scrape(url: str) -> dict:
+    """
+    3단계 파이프라인:
+      1. 텍스트 추출
+      2. 이미지 → Claude Vision OCR   (텍스트 부족 시)
+      3. 영상 → 자막/STT              (1+2 모두 부족 시)
+    """
     source = detect_source(url)
+
+    # ── Stage 1: 텍스트 ─────────────────────────────────────────────────────
+    result = _scrape_text(url, source)
+    image_urls: list[str] = result.pop("_image_urls", [])
+
+    if _is_sufficient(result["text"]):
+        return result
+
+    # ── Stage 2: 이미지 OCR ─────────────────────────────────────────────────
+    if image_urls:
+        try:
+            from ai import describe_images
+            ocr = describe_images(image_urls[:3])
+            if ocr:
+                result["text"] = _join(result["text"], ocr)
+                if _is_sufficient(result["text"]):
+                    return result
+        except Exception:
+            pass
+
+    # ── Stage 3: 영상 STT ────────────────────────────────────────────────────
+    try:
+        transcript = _transcribe(url)
+        if transcript:
+            result["text"] = _join(result["text"], transcript)
+    except Exception:
+        pass
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Stage 1: Text helpers
+# ---------------------------------------------------------------------------
+
+def _scrape_text(url: str, source: str) -> dict:
     if source == "YouTube":
         return _scrape_youtube(url)
-    if source == "Instagram":
-        return _scrape_instagram(url)
     if source == "TikTok":
         return _scrape_oembed(url, "https://www.tiktok.com/oembed?url={url}")
     return _scrape_web(url)
-
-
-def _get_with_retry(url: str, *, timeout: int = 10, **kwargs) -> requests.Response:
-    delay = 1
-    last_exc: Exception = RuntimeError("unreachable")
-    for attempt in range(3):
-        try:
-            resp = requests.get(url, timeout=timeout, **kwargs)
-            resp.raise_for_status()
-            return resp
-        except _RETRYABLE as e:
-            last_exc = e
-            if attempt < 2:
-                time.sleep(delay)
-                delay *= 2
-        except requests.HTTPError as e:
-            # 5xx는 재시도, 4xx는 즉시 포기
-            if e.response is not None and e.response.status_code < 500:
-                raise
-            last_exc = e
-            if attempt < 2:
-                time.sleep(delay)
-                delay *= 2
-    raise last_exc
 
 
 def _scrape_youtube(url: str) -> dict:
@@ -67,18 +97,16 @@ def _scrape_youtube(url: str) -> dict:
     try:
         resp = _get_with_retry(oembed_url)
         data = resp.json()
+        title = data.get("title", "")
+        author = data.get("author_name", "")
         return {
-            "title": data.get("title", ""),
-            "description": data.get("author_name", ""),
-            "text": f"{data.get('title', '')} by {data.get('author_name', '')}",
+            "title": title,
+            "description": author,
+            "text": f"{title}\n{author}",
+            "_image_urls": [],
         }
     except Exception:
         pass
-    return _scrape_web(url)
-
-
-def _scrape_instagram(url: str) -> dict:
-    # Instagram oEmbed는 인증 없이 불안정 — 바로 일반 웹 스크래핑으로 fallback
     return _scrape_web(url)
 
 
@@ -89,10 +117,12 @@ def _scrape_oembed(url: str, template: str) -> dict:
         data = resp.json()
         title = data.get("title", "")
         author = data.get("author_name", "")
+        thumbnail = data.get("thumbnail_url", "")
         return {
             "title": title,
             "description": author,
-            "text": f"{title} by {author}",
+            "text": f"{title}\n{author}",
+            "_image_urls": [thumbnail] if thumbnail else [],
         }
     except Exception:
         pass
@@ -103,7 +133,7 @@ def _scrape_web(url: str) -> dict:
     try:
         resp = _get_with_retry(url, timeout=15, headers=HEADERS)
     except Exception as e:
-        return {"title": "", "description": "", "text": "", "error": str(e)}
+        return {"title": "", "description": "", "text": "", "_image_urls": [], "error": str(e)}
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -122,11 +152,182 @@ def _scrape_web(url: str) -> dict:
     paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
     body = " ".join(p for p in paragraphs if len(p) > 40)[:3000]
 
+    image_urls = _extract_image_urls(soup)
+
     return {
         "title": title,
         "description": description,
         "text": f"{title}\n{description}\n{body}".strip(),
+        "_image_urls": image_urls,
     }
+
+
+def _extract_image_urls(soup: BeautifulSoup) -> list[str]:
+    urls: list[str] = []
+
+    for attr in ("og:image", "twitter:image"):
+        val = _meta(soup, attr)
+        if val and val not in urls:
+            urls.append(val)
+
+    for img in soup.find_all("img", src=True):
+        src = str(img["src"])
+        if src.startswith("http") and src not in urls:
+            urls.append(src)
+        if len(urls) >= 5:
+            break
+
+    return urls
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: Video transcription
+# ---------------------------------------------------------------------------
+
+def _transcribe(url: str) -> str:
+    # 자막 우선 (빠르고 가벼움)
+    captions = _get_captions(url)
+    if _is_sufficient(captions):
+        return captions
+
+    # 자막 없으면 오디오 다운로드 + Whisper STT
+    stt = _whisper_stt(url)
+    return stt
+
+
+def _get_captions(url: str) -> str:
+    try:
+        import yt_dlp
+    except ImportError:
+        return ""
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ydl_opts = {
+            "writeautomaticsub": True,
+            "writesubtitles": True,
+            "subtitleslangs": ["ko", "en"],
+            "skip_download": True,
+            "outtmpl": os.path.join(tmpdir, "%(id)s"),
+            "quiet": True,
+            "no_warnings": True,
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+        except Exception:
+            return ""
+
+        for fname in os.listdir(tmpdir):
+            if fname.endswith(".vtt") or fname.endswith(".srt"):
+                with open(os.path.join(tmpdir, fname), encoding="utf-8") as f:
+                    return _parse_subtitle(f.read())
+
+    return ""
+
+
+def _whisper_stt(url: str) -> str:
+    try:
+        import faster_whisper
+    except ImportError:
+        return ""
+
+    try:
+        import yt_dlp
+    except ImportError:
+        return ""
+
+    global _whisper_model
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        audio_path = os.path.join(tmpdir, "audio")
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "outtmpl": audio_path + ".%(ext)s",
+            "quiet": True,
+            "no_warnings": True,
+            # 5분까지만 다운로드 (Railway 무료 플랜 고려)
+            "external_downloader_args": {"ffmpeg_i": ["-t", "300"]},
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+        except Exception:
+            return ""
+
+        # 다운로드된 파일 찾기
+        audio_file = next(
+            (os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.startswith("audio.")),
+            None,
+        )
+        if not audio_file:
+            return ""
+
+        try:
+            if _whisper_model is None:
+                _whisper_model = faster_whisper.WhisperModel(
+                    "base", device="cpu", compute_type="int8"
+                )
+            segments, _ = _whisper_model.transcribe(audio_file, beam_size=1)
+            return " ".join(seg.text.strip() for seg in segments)[:3000]
+        except Exception:
+            return ""
+
+
+def _parse_subtitle(text: str) -> str:
+    # WEBVTT 헤더 제거
+    text = re.sub(r"WEBVTT.*?\n\n", "", text, flags=re.DOTALL)
+    # 타임스탬프 라인 제거
+    text = re.sub(r"\d{2}:\d{2}(:\d{2})?[.,]\d{3} --> .+", "", text)
+    # HTML/XML 태그 제거
+    text = re.sub(r"<[^>]+>", "", text)
+    # 시퀀스 번호 제거
+    text = re.sub(r"^\d+\s*$", "", text, flags=re.MULTILINE)
+
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    # 중복 라인 제거 (자막은 같은 문장이 반복되는 경우 많음)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for line in lines:
+        if line not in seen:
+            seen.add(line)
+            unique.append(line)
+
+    return " ".join(unique)[:3000]
+
+
+# ---------------------------------------------------------------------------
+# Shared utilities
+# ---------------------------------------------------------------------------
+
+def _is_sufficient(text: str) -> bool:
+    return len((text or "").strip()) >= SUFFICIENT_TEXT_LEN
+
+
+def _join(*parts: str) -> str:
+    return "\n".join(p for p in parts if p).strip()
+
+
+def _get_with_retry(url: str, *, timeout: int = 10, **kwargs) -> requests.Response:
+    delay = 1
+    last_exc: Exception = RuntimeError("unreachable")
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, timeout=timeout, **kwargs)
+            resp.raise_for_status()
+            return resp
+        except _RETRYABLE as e:
+            last_exc = e
+            if attempt < 2:
+                time.sleep(delay)
+                delay *= 2
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code < 500:
+                raise
+            last_exc = e
+            if attempt < 2:
+                time.sleep(delay)
+                delay *= 2
+    raise last_exc
 
 
 def _meta(soup: BeautifulSoup, name: str) -> str:

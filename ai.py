@@ -1,5 +1,7 @@
+import base64
 import json
 import os
+import requests
 import anthropic
 
 _client = None
@@ -80,3 +82,42 @@ URL: {url}
         result["type"] = "Other"
 
     return result
+
+
+def describe_images(image_urls: list[str]) -> str:
+    """이미지 URL 목록을 받아 Claude Vision으로 텍스트/핵심 내용 추출."""
+    content: list[dict] = []
+
+    for url in image_urls[:3]:
+        try:
+            resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            media_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+            if not media_type.startswith("image/"):
+                continue
+            b64 = base64.standard_b64encode(resp.content).decode()
+            content.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": b64},
+            })
+        except Exception:
+            continue
+
+    if not content:
+        return ""
+
+    content.append({
+        "type": "text",
+        "text": (
+            "이미지에서 텍스트와 핵심 내용을 추출해줘. "
+            "음식명, 메뉴, 가격, 장소명, 주소, 브랜드, 상품명 등 구체적 정보 위주로 서술해."
+        ),
+    })
+
+    client = _get_client()
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": content}],
+    )
+    return response.content[0].text.strip()
