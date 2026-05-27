@@ -141,7 +141,6 @@ def save(
         "Link": {"url": url},
         "Source": {"select": {"name": source}},
         "Type": {"select": {"name": type_}},
-        "Summary": {"rich_text": [{"text": {"content": summary}}]},
         "Status": {"select": {"name": "저장됨"}},
     }
 
