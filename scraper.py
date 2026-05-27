@@ -161,7 +161,9 @@ def _scrape_instagram(url: str) -> dict:
             "text": caption,
             "_image_urls": [thumbnail] if thumbnail else [],
         }
-    except Exception:
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error("instaloader post fetch failed shortcode=%s error=%s", shortcode, e)
         return _scrape_web(url)
 
 
