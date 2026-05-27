@@ -6,8 +6,9 @@ import anthropic
 
 _client = None
 
-SYSTEM_PROMPT = """너는 웹 콘텐츠를 분석해서 노션 DB에 저장할 메타데이터를 추출하는 어시스턴트야.
-항상 유효한 JSON만 응답하고 다른 텍스트는 절대 포함하지 마."""
+SYSTEM_PROMPT = """너는 웹 콘텐츠에서 메타데이터를 추출하는 어시스턴트야.
+항상 유효한 JSON만 응답하고 다른 텍스트는 절대 포함하지 마.
+핵심 원칙: 원문에 있는 내용만 추출해. 없는 내용은 절대 추측하거나 생성하지 마."""
 
 ALLOWED_TYPES = ["Recipe", "Restaurant", "Cafe", "Product", "Article", "Video", "Other"]
 ALLOWED_TAGS = [
@@ -30,7 +31,7 @@ def analyze(url: str, scraped_text: str) -> dict:
     tags_hint = ", ".join(ALLOWED_TAGS)
     types_hint = " | ".join(ALLOWED_TYPES)
 
-    user_message = f"""다음 웹 콘텐츠를 분석해서 JSON으로만 응답해:
+    user_message = f"""다음 웹 콘텐츠에서 정보를 추출해서 JSON으로만 응답해:
 
 URL: {url}
 콘텐츠: {scraped_text[:4000]}
@@ -38,17 +39,17 @@ URL: {url}
 응답 형식:
 {{
   "title": "간결한 제목 (30자 이내)",
-  "summary": "3줄 요약 (각 줄은 핵심 정보 위주, \\n으로 구분)",
+  "summary": "콘텐츠 소개 한두 문장 — 원문에서 그대로 발췌. 요약·압축·재작성 금지",
   "type": "{types_hint} 중 하나",
   "tags": ["태그1", "태그2"],
-  "location": "큰 행정구역 단위만 (예: 종로구, 의정부시, 강남구). 없으면 빈 문자열",
-  "ingredients": ["재료1 분량", "재료2 분량"],
-  "steps": ["조리 단계1", "조리 단계2"],
+  "location": "큰 행정구역 단위만 (예: 종로구, 의정부시). 없으면 빈 문자열",
+  "ingredients": ["재료명 분량 — 원문 표현 그대로"],
+  "steps": ["조리 단계 — 원문 표현 그대로"],
   "restaurants": [
     {{
       "name": "식당명",
-      "menu": "대표메뉴 한 줄 설명",
-      "address": "상세 주소 또는 위치 설명"
+      "menu": "대표메뉴",
+      "address": "상세 주소"
     }}
   ]
 }}
@@ -56,14 +57,17 @@ URL: {url}
 태그 참고 목록 (이 중에서 최대 5개, 없으면 새로 만들어도 됨): {tags_hint}
 
 규칙:
+- ingredients / steps: 원문에 명시된 내용만. 없는 재료·단계 추가 절대 금지. 원문 표현 그대로.
+  원문에 재료나 순서가 없으면 빈 배열.
 - type이 Recipe일 때만 ingredients와 steps를 채워. 나머지는 빈 배열.
-- type이 Restaurant 또는 Cafe일 때만 restaurants를 채워. 식당이 여러 개면 모두 추출. 나머지는 빈 배열.
-- location은 구/시/군 단위의 큰 행정구역만. 상세 주소는 restaurants[].address에."""
+- type이 Restaurant 또는 Cafe일 때만 restaurants를 채워. 식당 여러 개면 모두 추출. 나머지는 빈 배열.
+- location은 구/시/군 단위만. 상세 주소는 restaurants[].address에.
+- 추측·생성·상상 금지. 콘텐츠에 없으면 빈 값으로."""
 
     client = _get_client()
     response = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=1024,
+        max_tokens=2048,
         system=[
             {
                 "type": "text",
