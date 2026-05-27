@@ -23,43 +23,6 @@ _RETRYABLE = (requests.ConnectionError, requests.Timeout)
 # faster-whisper 모델은 첫 호출 시 한 번만 로드
 _whisper_model = None
 
-# instaloader 인스턴스 — 서버 시작 시 한 번 로그인, 메모리에 유지
-_insta_loader = None
-
-
-def _get_insta_loader():
-    """INSTAGRAM_SESSION_ID 쿠키로 로그인. 비밀번호 불필요."""
-    global _insta_loader
-    if _insta_loader is not None:
-        return _insta_loader
-
-    import logging
-    logger = logging.getLogger(__name__)
-
-    session_id = os.environ.get("INSTAGRAM_SESSION_ID")
-    username = os.environ.get("INSTAGRAM_USERNAME")
-    if not (session_id and username):
-        return None
-    try:
-        import instaloader
-        L = instaloader.Instaloader(
-            quiet=True,
-            download_pictures=False,
-            download_videos=False,
-            download_video_thumbnails=False,
-            download_geotags=False,
-            download_comments=False,
-            save_metadata=False,
-        )
-        L.context._session.cookies.update({"sessionid": session_id})
-        L.context.username = username
-        _insta_loader = L
-        logger.info("instaloader session loaded: %s", username)
-        return _insta_loader
-    except Exception as e:
-        logger.error("instaloader session load failed: %s", e)
-        return None
-
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -136,34 +99,39 @@ def _scrape_text(url: str, source: str) -> dict:
 
 
 def _scrape_instagram(url: str) -> dict:
-    """instaloader로 캡션 + 썸네일 추출. 로그인 정보 없으면 _scrape_web으로 폴백."""
-    shortcode_match = re.search(r"/(?:reel|p|tv)/([A-Za-z0-9_-]+)", url)
-    if not shortcode_match:
-        return _scrape_web(url)
-
-    shortcode = shortcode_match.group(1)
-    L = _get_insta_loader()
-    if L is None:
-        return _scrape_web(url)
+    """yt-dlp로 인스타 캡션 + 썸네일 추출. sessionid 쿠키 사용."""
+    import logging
+    logger = logging.getLogger(__name__)
+    session_id = os.environ.get("INSTAGRAM_SESSION_ID", "")
 
     try:
-        import instaloader
-        post = instaloader.Post.from_shortcode(L.context, shortcode)
-        caption = post.caption or ""
-        thumbnail = ""
-        if post.is_video:
-            thumbnail = post.video_thumbnail_url or ""
-        if not thumbnail:
-            thumbnail = post.url or ""
+        import yt_dlp
+        ydl_opts = {
+            "skip_download": True,
+            "quiet": True,
+            "no_warnings": True,
+        }
+        if session_id:
+            ydl_opts["http_headers"] = {
+                "Cookie": f"sessionid={session_id}",
+                "User-Agent": HEADERS["User-Agent"],
+            }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        caption = info.get("description") or ""
+        thumbnail = info.get("thumbnail") or ""
+        uploader = info.get("uploader") or ""
+        title = info.get("title") or uploader
+        text = "\n".join(filter(None, [title, caption]))
+        logger.info("yt-dlp instagram ok url=%s caption_len=%d", url, len(caption))
         return {
-            "title": post.owner_username,
+            "title": title,
             "description": caption[:200],
-            "text": caption,
+            "text": text,
             "_image_urls": [thumbnail] if thumbnail else [],
         }
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error("instaloader post fetch failed shortcode=%s error=%s", shortcode, e)
+        logger.error("yt-dlp instagram failed url=%s error=%s", url, e)
         return _scrape_web(url)
 
 

@@ -7,4 +7,3 @@ anthropic==0.40.0
 notion-client==2.2.1
 yt-dlp==2024.11.18
 faster-whisper==1.1.0
-instaloader==4.13.1

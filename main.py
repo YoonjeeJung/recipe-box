@@ -109,14 +109,10 @@ async def health():
 
 @app.get("/debug/instagram")
 async def debug_instagram():
-    """instaloader 세션 상태 확인용 엔드포인트."""
-    username = os.environ.get("INSTAGRAM_USERNAME", "")
-    has_session = bool(os.environ.get("INSTAGRAM_SESSION_ID"))
-    loader = scraper._get_insta_loader()
+    """인스타 세션 설정 확인용 엔드포인트."""
     return {
-        "session_id_set": has_session,
-        "username": username,
-        "logged_in": loader is not None,
+        "session_id_set": bool(os.environ.get("INSTAGRAM_SESSION_ID")),
+        "username": os.environ.get("INSTAGRAM_USERNAME", ""),
     }
 
 
