@@ -23,6 +23,36 @@ _RETRYABLE = (requests.ConnectionError, requests.Timeout)
 # faster-whisper 모델은 첫 호출 시 한 번만 로드
 _whisper_model = None
 
+# instaloader 인스턴스 — 서버 시작 시 한 번 로그인, 메모리에 유지
+_insta_loader = None
+
+
+def _get_insta_loader():
+    """INSTAGRAM_USERNAME / INSTAGRAM_PASSWORD 환경변수가 있으면 로그인해서 반환."""
+    global _insta_loader
+    if _insta_loader is not None:
+        return _insta_loader
+    username = os.environ.get("INSTAGRAM_USERNAME")
+    password = os.environ.get("INSTAGRAM_PASSWORD")
+    if not (username and password):
+        return None
+    try:
+        import instaloader
+        L = instaloader.Instaloader(
+            quiet=True,
+            download_pictures=False,
+            download_videos=False,
+            download_video_thumbnails=False,
+            download_geotags=False,
+            download_comments=False,
+            save_metadata=False,
+        )
+        L.login(username, password)
+        _insta_loader = L
+        return _insta_loader
+    except Exception:
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -91,9 +121,41 @@ def scrape(url: str) -> dict:
 def _scrape_text(url: str, source: str) -> dict:
     if source == "YouTube":
         return _scrape_youtube(url)
+    if source == "Instagram":
+        return _scrape_instagram(url)
     if source == "TikTok":
         return _scrape_oembed(url, "https://www.tiktok.com/oembed?url={url}")
     return _scrape_web(url)
+
+
+def _scrape_instagram(url: str) -> dict:
+    """instaloader로 캡션 + 썸네일 추출. 로그인 정보 없으면 _scrape_web으로 폴백."""
+    shortcode_match = re.search(r"/(?:reel|p|tv)/([A-Za-z0-9_-]+)", url)
+    if not shortcode_match:
+        return _scrape_web(url)
+
+    shortcode = shortcode_match.group(1)
+    L = _get_insta_loader()
+    if L is None:
+        return _scrape_web(url)
+
+    try:
+        import instaloader
+        post = instaloader.Post.from_shortcode(L.context, shortcode)
+        caption = post.caption or ""
+        thumbnail = ""
+        if post.is_video:
+            thumbnail = post.video_thumbnail_url or ""
+        if not thumbnail:
+            thumbnail = post.url or ""
+        return {
+            "title": post.owner_username,
+            "description": caption[:200],
+            "text": caption,
+            "_image_urls": [thumbnail] if thumbnail else [],
+        }
+    except Exception:
+        return _scrape_web(url)
 
 
 def _scrape_youtube(url: str) -> dict:
