@@ -28,18 +28,20 @@ _insta_loader = None
 
 
 def _get_insta_loader():
-    """INSTAGRAM_USERNAME / INSTAGRAM_PASSWORD 환경변수가 있으면 로그인해서 반환."""
+    """INSTAGRAM_SESSION_ID 쿠키로 로그인. 비밀번호 불필요."""
     global _insta_loader
     if _insta_loader is not None:
         return _insta_loader
+
+    import logging
+    logger = logging.getLogger(__name__)
+
+    session_id = os.environ.get("INSTAGRAM_SESSION_ID")
     username = os.environ.get("INSTAGRAM_USERNAME")
-    password = os.environ.get("INSTAGRAM_PASSWORD")
-    if not (username and password):
+    if not (session_id and username):
         return None
     try:
         import instaloader
-        import logging
-        logger = logging.getLogger(__name__)
         L = instaloader.Instaloader(
             quiet=True,
             download_pictures=False,
@@ -49,13 +51,13 @@ def _get_insta_loader():
             download_comments=False,
             save_metadata=False,
         )
-        L.login(username, password)
+        L.context._session.cookies.update({"sessionid": session_id})
+        L.context.username = username
         _insta_loader = L
-        logger.info("instaloader login success: %s", username)
+        logger.info("instaloader session loaded: %s", username)
         return _insta_loader
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error("instaloader login failed: %s", e)
+        logger.error("instaloader session load failed: %s", e)
         return None
 
 
