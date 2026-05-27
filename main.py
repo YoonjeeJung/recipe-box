@@ -118,3 +118,25 @@ async def debug_instagram():
         "username": username,
         "logged_in": loader is not None,
     }
+
+
+class ScrapeDebugResponse(BaseModel):
+    text: str
+    text_length: int
+    cover_image_url: str
+    warning: str = ""
+
+
+@app.post("/debug/scrape")
+async def debug_scrape(req: SaveRequest):
+    """스크래핑 결과 원문 확인용 엔드포인트."""
+    try:
+        result = scraper.scrape(str(req.url))
+        return ScrapeDebugResponse(
+            text=result.get("text", ""),
+            text_length=len(result.get("text", "")),
+            cover_image_url=result.get("cover_image_url", ""),
+            warning=result.get("error", ""),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
