@@ -38,6 +38,8 @@ def _get_insta_loader():
         return None
     try:
         import instaloader
+        import logging
+        logger = logging.getLogger(__name__)
         L = instaloader.Instaloader(
             quiet=True,
             download_pictures=False,
@@ -49,8 +51,11 @@ def _get_insta_loader():
         )
         L.login(username, password)
         _insta_loader = L
+        logger.info("instaloader login success: %s", username)
         return _insta_loader
-    except Exception:
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error("instaloader login failed: %s", e)
         return None
 
 
