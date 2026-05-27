@@ -105,3 +105,16 @@ async def save_link(req: SaveRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/debug/instagram")
+async def debug_instagram():
+    """instaloader 로그인 상태 확인용 엔드포인트."""
+    username = os.environ.get("INSTAGRAM_USERNAME", "")
+    has_creds = bool(username and os.environ.get("INSTAGRAM_PASSWORD"))
+    loader = scraper._get_insta_loader()
+    return {
+        "credentials_set": has_creds,
+        "username": username,
+        "logged_in": loader is not None,
+    }
