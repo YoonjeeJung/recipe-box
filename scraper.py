@@ -118,11 +118,14 @@ def _scrape_instagram(url: str) -> dict:
                 "Cookie": f"sessionid={session_id}",
                 "User-Agent": HEADERS["User-Agent"],
             }
+        entries = []
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
+            # entries는 generator일 수 있으므로 ydl 컨텍스트 안에서 소비
+            if info.get("_type") in ("playlist", "multi_video"):
+                entries = list(info.get("entries") or [])
 
-        entries = list(info.get("entries") or [])
-        is_carousel = info.get("_type") == "playlist" or bool(entries)
+        is_carousel = bool(entries)
         caption = info.get("description") or ""
         uploader = info.get("uploader") or ""
         title = info.get("title") or uploader
@@ -136,15 +139,14 @@ def _scrape_instagram(url: str) -> dict:
                 title = first.get("title") or title
         else:
             thumbnail = info.get("thumbnail") or ""
-            # thumbnails(복수) 필드에서도 시도
             if not thumbnail:
                 thumbs = info.get("thumbnails") or []
                 thumbnail = thumbs[-1].get("url", "") if thumbs else ""
             thumbnails = [thumbnail] if thumbnail else []
 
         text = "\n".join(filter(None, [title, caption]))
-        logger.info("yt-dlp instagram ok url=%s _type=%s caption_len=%d is_carousel=%s images=%d",
-                    url, info.get("_type"), len(caption), is_carousel, len(thumbnails))
+        logger.info("yt-dlp instagram ok url=%s _type=%s entries=%d caption_len=%d is_carousel=%s images=%d",
+                    url, info.get("_type"), len(entries), len(caption), is_carousel, len(thumbnails))
         return {
             "title": title,
             "description": caption[:200],
