@@ -100,8 +100,48 @@ def _scrape_text(url: str, source: str) -> dict:
     return _scrape_web(url)
 
 
+def _instagram_carousel_images(url: str, session_id: str) -> list[str]:
+    """Instagram 내부 API로 캐러셀 슬라이드 이미지 URL 직접 추출."""
+    path = urlparse(url).path
+    parts = [p for p in path.split("/") if p]
+    if len(parts) < 2:
+        return []
+    shortcode = parts[1]
+
+    # shortcode → media_id (Instagram base64 인코딩)
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    media_id = 0
+    for char in shortcode:
+        if char in alphabet:
+            media_id = media_id * 64 + alphabet.index(char)
+
+    api_url = f"https://www.instagram.com/api/v1/media/{media_id}/info/"
+    headers = {
+        "Cookie": f"sessionid={session_id}",
+        "User-Agent": "Instagram 219.0.0.12.117 Android",
+        "Accept": "*/*",
+        "X-IG-App-ID": "936619743392459",
+    }
+    try:
+        resp = requests.get(api_url, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            return []
+        item = (resp.json().get("items") or [{}])[0]
+        if item.get("carousel_media"):
+            urls = []
+            for m in item["carousel_media"]:
+                candidates = m.get("image_versions2", {}).get("candidates", [])
+                if candidates:
+                    urls.append(candidates[0]["url"])
+            return urls[:5]
+        candidates = item.get("image_versions2", {}).get("candidates", [])
+        return [candidates[0]["url"]] if candidates else []
+    except Exception:
+        return []
+
+
 def _scrape_instagram(url: str) -> dict:
-    """yt-dlp로 인스타 캡션 + 썸네일 추출. sessionid 쿠키 사용."""
+    """yt-dlp로 인스타 캡션 추출 + Instagram API로 캐러셀 이미지 수집."""
     import logging
     logger = logging.getLogger(__name__)
     session_id = os.environ.get("INSTAGRAM_SESSION_ID", "")
@@ -118,25 +158,17 @@ def _scrape_instagram(url: str) -> dict:
                 "Cookie": f"sessionid={session_id}",
                 "User-Agent": HEADERS["User-Agent"],
             }
-        entries = []
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            # entries는 generator일 수 있으므로 ydl 컨텍스트 안에서 소비
-            if info.get("_type") in ("playlist", "multi_video"):
-                entries = list(info.get("entries") or [])
 
-        is_carousel = bool(entries)
+        is_carousel = info.get("_type") == "playlist"
         caption = info.get("description") or ""
         uploader = info.get("uploader") or ""
         title = info.get("title") or uploader
 
-        if entries:
-            # 캐러셀: 각 슬라이드 썸네일 수집
-            thumbnails = [e["thumbnail"] for e in entries if e and e.get("thumbnail")][:5]
-            if not caption:
-                first = entries[0] or {}
-                caption = first.get("description") or ""
-                title = first.get("title") or title
+        # 캐러셀이면 Instagram API로 슬라이드 이미지 직접 수집
+        if is_carousel and session_id:
+            thumbnails = _instagram_carousel_images(url, session_id)
         else:
             thumbnail = info.get("thumbnail") or ""
             if not thumbnail:
@@ -145,8 +177,8 @@ def _scrape_instagram(url: str) -> dict:
             thumbnails = [thumbnail] if thumbnail else []
 
         text = "\n".join(filter(None, [title, caption]))
-        logger.info("yt-dlp instagram ok url=%s _type=%s entries=%d caption_len=%d is_carousel=%s images=%d",
-                    url, info.get("_type"), len(entries), len(caption), is_carousel, len(thumbnails))
+        logger.info("yt-dlp instagram ok url=%s is_carousel=%s caption_len=%d images=%d",
+                    url, is_carousel, len(caption), len(thumbnails))
         return {
             "title": title,
             "description": caption[:200],
