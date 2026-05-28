@@ -136,3 +136,31 @@ async def debug_scrape(req: SaveRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/debug/instagram-raw")
+async def debug_instagram_raw(req: SaveRequest):
+    """yt-dlp가 인스타 URL에서 반환하는 raw 구조 확인용."""
+    import os as _os
+    import yt_dlp
+    session_id = _os.environ.get("INSTAGRAM_SESSION_ID", "")
+    ydl_opts = {"skip_download": True, "quiet": True, "no_warnings": True}
+    if session_id:
+        ydl_opts["http_headers"] = {
+            "Cookie": f"sessionid={session_id}",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(str(req.url), download=False)
+            entries = list(info.get("entries") or [])
+        return {
+            "_type": info.get("_type"),
+            "has_thumbnail": bool(info.get("thumbnail")),
+            "thumbnails_count": len(info.get("thumbnails") or []),
+            "entries_count": len(entries),
+            "entry_keys": list(entries[0].keys()) if entries else [],
+            "entry_thumbnail": entries[0].get("thumbnail", "") if entries else "",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
