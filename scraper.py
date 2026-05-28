@@ -53,9 +53,11 @@ def scrape(url: str) -> dict:
     # ── Stage 1: 텍스트 ─────────────────────────────────────────────────────
     result = _scrape_text(url, source)
     image_urls: list[str] = result.pop("_image_urls", [])
+    is_carousel: bool = result.pop("_is_carousel", False)
     cover_image_url: str = image_urls[0] if image_urls else ""
 
-    if _is_sufficient(result["text"]):
+    # 카드뉴스(캐러셀)는 이미지에 내용이 있으므로 텍스트가 충분해도 OCR 진행
+    if _is_sufficient(result["text"]) and not is_carousel:
         result["cover_image_url"] = cover_image_url
         return result
 
@@ -118,17 +120,33 @@ def _scrape_instagram(url: str) -> dict:
             }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
+
+        is_carousel = info.get("_type") == "playlist"
         caption = info.get("description") or ""
-        thumbnail = info.get("thumbnail") or ""
         uploader = info.get("uploader") or ""
         title = info.get("title") or uploader
+
+        if is_carousel:
+            # 캐러셀: 각 슬라이드 썸네일 수집
+            entries = info.get("entries") or []
+            thumbnails = [e["thumbnail"] for e in entries if e and e.get("thumbnail")][:5]
+            if not caption and entries:
+                first = entries[0] or {}
+                caption = first.get("description") or ""
+                title = first.get("title") or title
+        else:
+            thumbnail = info.get("thumbnail") or ""
+            thumbnails = [thumbnail] if thumbnail else []
+
         text = "\n".join(filter(None, [title, caption]))
-        logger.info("yt-dlp instagram ok url=%s caption_len=%d", url, len(caption))
+        logger.info("yt-dlp instagram ok url=%s caption_len=%d is_carousel=%s images=%d",
+                    url, len(caption), is_carousel, len(thumbnails))
         return {
             "title": title,
             "description": caption[:200],
             "text": text,
-            "_image_urls": [thumbnail] if thumbnail else [],
+            "_image_urls": thumbnails,
+            "_is_carousel": is_carousel,
         }
     except Exception as e:
         logger.error("yt-dlp instagram failed url=%s error=%s", url, e)
