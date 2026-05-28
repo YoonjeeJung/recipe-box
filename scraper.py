@@ -121,26 +121,30 @@ def _scrape_instagram(url: str) -> dict:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
-        is_carousel = info.get("_type") == "playlist"
+        entries = list(info.get("entries") or [])
+        is_carousel = info.get("_type") == "playlist" or bool(entries)
         caption = info.get("description") or ""
         uploader = info.get("uploader") or ""
         title = info.get("title") or uploader
 
-        if is_carousel:
+        if entries:
             # 캐러셀: 각 슬라이드 썸네일 수집
-            entries = info.get("entries") or []
             thumbnails = [e["thumbnail"] for e in entries if e and e.get("thumbnail")][:5]
-            if not caption and entries:
+            if not caption:
                 first = entries[0] or {}
                 caption = first.get("description") or ""
                 title = first.get("title") or title
         else:
             thumbnail = info.get("thumbnail") or ""
+            # thumbnails(복수) 필드에서도 시도
+            if not thumbnail:
+                thumbs = info.get("thumbnails") or []
+                thumbnail = thumbs[-1].get("url", "") if thumbs else ""
             thumbnails = [thumbnail] if thumbnail else []
 
         text = "\n".join(filter(None, [title, caption]))
-        logger.info("yt-dlp instagram ok url=%s caption_len=%d is_carousel=%s images=%d",
-                    url, len(caption), is_carousel, len(thumbnails))
+        logger.info("yt-dlp instagram ok url=%s _type=%s caption_len=%d is_carousel=%s images=%d",
+                    url, info.get("_type"), len(caption), is_carousel, len(thumbnails))
         return {
             "title": title,
             "description": caption[:200],
