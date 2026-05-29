@@ -97,6 +97,8 @@ def _scrape_text(url: str, source: str) -> dict:
         return _scrape_instagram(url)
     if source == "TikTok":
         return _scrape_oembed(url, "https://www.tiktok.com/oembed?url={url}")
+    if source == "Twitter":
+        return _scrape_twitter(url)
     return _scrape_web(url)
 
 
@@ -189,6 +191,31 @@ def _scrape_instagram(url: str) -> dict:
     except Exception as e:
         logger.error("yt-dlp instagram failed url=%s error=%s", url, e)
         return _scrape_web(url)
+
+
+def _scrape_twitter(url: str) -> dict:
+    """Twitter/X oEmbed API로 트윗 텍스트 추출. 인증 불필요."""
+    oembed_url = f"https://publish.twitter.com/oembed?url={url}&omit_script=true"
+    try:
+        resp = _get_with_retry(oembed_url, headers=HEADERS)
+        data = resp.json()
+        author = data.get("author_name", "")
+        # HTML에서 트윗 본문 파싱
+        html = data.get("html", "")
+        soup = BeautifulSoup(html, "html.parser")
+        # blockquote > p 가 트윗 본문
+        p = soup.find("p")
+        tweet_text = p.get_text(" ", strip=True) if p else ""
+        text = "\n".join(filter(None, [author, tweet_text]))
+        return {
+            "title": author,
+            "description": tweet_text[:200],
+            "text": text,
+            "_image_urls": [],
+        }
+    except Exception:
+        pass
+    return _scrape_web(url)
 
 
 def _scrape_youtube(url: str) -> dict:
