@@ -87,17 +87,18 @@ def scrape(url: str) -> dict:
         result["cover_image_url"] = cover_image_url
         return result
 
-    # ── Stage 1.5: 댓글 (YouTube Shorts / Instagram Reels) ──────────────────
+    # ── Stage 1.5: 고정댓글 (YouTube Shorts / Instagram Reels) ─────────────
     if source in ("YouTube", "Instagram"):
         try:
             comments = _get_comments(url, source)
+            _logger.info("stage1.5 comments len=%d source=%s url=%s", len(comments), source, url)
             if comments:
                 result["text"] = _join(result["text"], comments)
                 if _is_sufficient(result["text"]) and not is_carousel:
                     result["cover_image_url"] = cover_image_url
                     return result
-        except Exception:
-            pass
+        except Exception as e:
+            _logger.warning("stage1.5 failed url=%s error=%s", url, e)
 
     # ── Stage 2: 이미지 OCR ─────────────────────────────────────────────────
     if image_urls:
@@ -333,11 +334,13 @@ def _get_youtube_comments(url: str) -> str:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
         comments = info.get("comments") or []
-        # 고정댓글 우선, 그다음 좋아요 순
-        comments.sort(key=lambda c: (not c.get("is_pinned", False), -(c.get("like_count") or 0)))
-        texts = [c.get("text", "") for c in comments[:3] if c.get("text")]
-        return "\n\n".join(texts)
-    except Exception:
+        _logger.info("youtube comments total=%d url=%s", len(comments), url)
+        # 고정댓글만 사용
+        pinned = [c.get("text", "") for c in comments if c.get("is_pinned") and c.get("text")]
+        _logger.info("youtube pinned=%d", len(pinned))
+        return "\n\n".join(pinned)
+    except Exception as e:
+        _logger.warning("youtube comments failed url=%s error=%s", url, e)
         return ""
 
 
@@ -357,20 +360,18 @@ def _get_instagram_comments(url: str, session_id: str) -> str:
     }
     try:
         resp = requests.get(api_url, headers=headers, timeout=10)
+        _logger.info("instagram comments api status=%d url=%s", resp.status_code, url)
         if resp.status_code != 200:
             return ""
         data = resp.json()
         comments = data.get("comments") or []
-        # 고정댓글 우선, 그다음 좋아요 순
-        pinned = [c for c in comments if c.get("is_pinned_comment")]
-        rest = sorted(
-            [c for c in comments if not c.get("is_pinned_comment")],
-            key=lambda c: -(c.get("comment_like_count") or 0),
-        )
-        top = (pinned + rest)[:3]
-        texts = [c.get("text", "") for c in top if c.get("text")]
-        return "\n\n".join(texts)
-    except Exception:
+        _logger.info("instagram comments total=%d", len(comments))
+        # 고정댓글만 사용
+        pinned = [c.get("text", "") for c in comments if c.get("is_pinned_comment") and c.get("text")]
+        _logger.info("instagram pinned=%d", len(pinned))
+        return "\n\n".join(pinned)
+    except Exception as e:
+        _logger.warning("instagram comments failed url=%s error=%s", url, e)
         return ""
 
 
