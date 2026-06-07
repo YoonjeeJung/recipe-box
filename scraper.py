@@ -61,6 +61,18 @@ def scrape(url: str) -> dict:
         result["cover_image_url"] = cover_image_url
         return result
 
+    # ── Stage 1.5: 댓글 (YouTube Shorts / Instagram Reels) ──────────────────
+    if source in ("YouTube", "Instagram"):
+        try:
+            comments = _get_comments(url, source)
+            if comments:
+                result["text"] = _join(result["text"], comments)
+                if _is_sufficient(result["text"]) and not is_carousel:
+                    result["cover_image_url"] = cover_image_url
+                    return result
+        except Exception:
+            pass
+
     # ── Stage 2: 이미지 OCR ─────────────────────────────────────────────────
     if image_urls:
         try:
@@ -102,20 +114,24 @@ def _scrape_text(url: str, source: str) -> dict:
     return _scrape_web(url)
 
 
-def _instagram_carousel_images(url: str, session_id: str) -> list[str]:
-    """Instagram 내부 API로 캐러셀 슬라이드 이미지 URL 직접 추출."""
+def _instagram_media_id(url: str) -> int:
+    """Instagram URL의 shortcode를 media_id(int)로 변환."""
     path = urlparse(url).path
     parts = [p for p in path.split("/") if p]
-    if len(parts) < 2:
-        return []
-    shortcode = parts[1]
-
-    # shortcode → media_id (Instagram base64 인코딩)
+    shortcode = parts[1] if len(parts) >= 2 else ""
     alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
     media_id = 0
     for char in shortcode:
         if char in alphabet:
             media_id = media_id * 64 + alphabet.index(char)
+    return media_id
+
+
+def _instagram_carousel_images(url: str, session_id: str) -> list[str]:
+    """Instagram 내부 API로 캐러셀 슬라이드 이미지 URL 직접 추출."""
+    media_id = _instagram_media_id(url)
+    if not media_id:
+        return []
 
     api_url = f"https://www.instagram.com/api/v1/media/{media_id}/info/"
     headers = {
@@ -219,6 +235,27 @@ def _scrape_twitter(url: str) -> dict:
 
 
 def _scrape_youtube(url: str) -> dict:
+    """YouTube 영상 정보 추출 — yt-dlp(전체 설명)로 시도, 실패 시 oEmbed 폴백."""
+    try:
+        import yt_dlp
+        ydl_opts = {"skip_download": True, "quiet": True, "no_warnings": True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        title = info.get("title") or ""
+        description = info.get("description") or ""
+        thumbnail = info.get("thumbnail") or ""
+        if not thumbnail:
+            thumbs = info.get("thumbnails") or []
+            thumbnail = thumbs[-1].get("url", "") if thumbs else ""
+        return {
+            "title": title,
+            "description": description[:200],
+            "text": "\n".join(filter(None, [title, description])),
+            "_image_urls": [thumbnail] if thumbnail else [],
+        }
+    except Exception:
+        pass
+    # oEmbed 폴백 (title + author_name만 가져옴)
     oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
     try:
         resp = _get_with_retry(oembed_url)
@@ -254,6 +291,71 @@ def _scrape_oembed(url: str, template: str) -> dict:
     except Exception:
         pass
     return _scrape_web(url)
+
+
+def _get_comments(url: str, source: str) -> str:
+    """YouTube/Instagram 고정댓글·인기댓글 텍스트 반환 (상위 3개)."""
+    if source == "YouTube":
+        return _get_youtube_comments(url)
+    if source == "Instagram":
+        session_id = os.environ.get("INSTAGRAM_SESSION_ID", "")
+        if session_id:
+            return _get_instagram_comments(url, session_id)
+    return ""
+
+
+def _get_youtube_comments(url: str) -> str:
+    try:
+        import yt_dlp
+        ydl_opts = {
+            "skip_download": True,
+            "quiet": True,
+            "no_warnings": True,
+            "getcomments": True,
+            "extractor_args": {"youtube": {"max_comments": ["20"]}},
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        comments = info.get("comments") or []
+        # 고정댓글 우선, 그다음 좋아요 순
+        comments.sort(key=lambda c: (not c.get("is_pinned", False), -(c.get("like_count") or 0)))
+        texts = [c.get("text", "") for c in comments[:3] if c.get("text")]
+        return "\n\n".join(texts)
+    except Exception:
+        return ""
+
+
+def _get_instagram_comments(url: str, session_id: str) -> str:
+    media_id = _instagram_media_id(url)
+    if not media_id:
+        return ""
+    api_url = (
+        f"https://www.instagram.com/api/v1/media/{media_id}/comments/"
+        "?can_support_threading=true&permalink_enabled=false"
+    )
+    headers = {
+        "Cookie": f"sessionid={session_id}",
+        "User-Agent": "Instagram 219.0.0.12.117 Android",
+        "Accept": "*/*",
+        "X-IG-App-ID": "936619743392459",
+    }
+    try:
+        resp = requests.get(api_url, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            return ""
+        data = resp.json()
+        comments = data.get("comments") or []
+        # 고정댓글 우선, 그다음 좋아요 순
+        pinned = [c for c in comments if c.get("is_pinned_comment")]
+        rest = sorted(
+            [c for c in comments if not c.get("is_pinned_comment")],
+            key=lambda c: -(c.get("comment_like_count") or 0),
+        )
+        top = (pinned + rest)[:3]
+        texts = [c.get("text", "") for c in top if c.get("text")]
+        return "\n\n".join(texts)
+    except Exception:
+        return ""
 
 
 def _scrape_web(url: str) -> dict:
