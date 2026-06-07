@@ -45,6 +45,7 @@ def _ydl_base_opts(**extra) -> dict:
         "quiet": True,
         "no_warnings": True,
         "format": "best",
+        "ignore_no_formats_error": True,  # Shorts 등 format 검증 실패해도 메타데이터 추출 계속
         "logger": _YtDlpLogger(),
         **extra,
     }
