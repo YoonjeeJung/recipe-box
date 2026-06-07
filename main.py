@@ -50,12 +50,10 @@ async def save_link(req: SaveRequest):
 
     # 스크래핑 — 실패해도 URL만으로 저장 계속 진행
     scraped_text = ""
-    scraped_title = ""
     cover_image_url = ""
     try:
         scraped = scraper.scrape(url)
         scraped_text = scraped.get("text", "")
-        scraped_title = scraped.get("title", "")
         cover_image_url = scraped.get("cover_image_url", "")
         if scraped.get("error"):
             warning = f"스크래핑 부분 실패: {scraped['error']}"
@@ -78,7 +76,7 @@ async def save_link(req: SaveRequest):
         page_id = notion.save(
             url=url,
             source=source,
-            title=scraped_title or analysis["title"] or url,
+            title=analysis["title"] or url,
             summary=analysis["summary"],
             type_=analysis["type"],
             tags=analysis["tags"],
@@ -95,7 +93,7 @@ async def save_link(req: SaveRequest):
     return SaveResponse(
         status="ok",
         notion_page_id=page_id,
-        title=scraped_title or analysis["title"],
+        title=analysis["title"],
         summary=analysis["summary"],
         tags=analysis["tags"],
         type=analysis["type"],
