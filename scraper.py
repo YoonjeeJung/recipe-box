@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import time
@@ -22,6 +23,31 @@ _RETRYABLE = (requests.ConnectionError, requests.Timeout)
 
 # faster-whisper 모델은 첫 호출 시 한 번만 로드
 _whisper_model = None
+
+_logger = logging.getLogger(__name__)
+
+
+class _YtDlpLogger:
+    """yt-dlp 콘솔 출력을 Python logger(DEBUG)로 전환 — Railway 로그 오염 방지."""
+    def debug(self, msg):
+        if msg.startswith("[debug]"):
+            return
+        _logger.debug("yt-dlp: %s", msg)
+    def info(self, msg): _logger.debug("yt-dlp: %s", msg)
+    def warning(self, msg): _logger.debug("yt-dlp warn: %s", msg)
+    def error(self, msg): _logger.debug("yt-dlp err: %s", msg)
+
+
+def _ydl_base_opts(**extra) -> dict:
+    """공통 yt-dlp 옵션 — format 에러 억제 + 로거 설정."""
+    return {
+        "skip_download": True,
+        "quiet": True,
+        "no_warnings": True,
+        "format": "best",
+        "logger": _YtDlpLogger(),
+        **extra,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -160,17 +186,11 @@ def _instagram_carousel_images(url: str, session_id: str) -> list[str]:
 
 def _scrape_instagram(url: str) -> dict:
     """yt-dlp로 인스타 캡션 추출 + Instagram API로 캐러셀 이미지 수집."""
-    import logging
-    logger = logging.getLogger(__name__)
     session_id = os.environ.get("INSTAGRAM_SESSION_ID", "")
 
     try:
         import yt_dlp
-        ydl_opts = {
-            "skip_download": True,
-            "quiet": True,
-            "no_warnings": True,
-        }
+        ydl_opts = _ydl_base_opts()
         if session_id:
             ydl_opts["http_headers"] = {
                 "Cookie": f"sessionid={session_id}",
@@ -195,8 +215,8 @@ def _scrape_instagram(url: str) -> dict:
             thumbnails = [thumbnail] if thumbnail else []
 
         text = "\n".join(filter(None, [title, caption]))
-        logger.info("yt-dlp instagram ok url=%s is_carousel=%s caption_len=%d images=%d",
-                    url, is_carousel, len(caption), len(thumbnails))
+        _logger.info("yt-dlp instagram ok url=%s is_carousel=%s caption_len=%d images=%d",
+                     url, is_carousel, len(caption), len(thumbnails))
         return {
             "title": title,
             "description": caption[:200],
@@ -205,7 +225,7 @@ def _scrape_instagram(url: str) -> dict:
             "_is_carousel": is_carousel,
         }
     except Exception as e:
-        logger.error("yt-dlp instagram failed url=%s error=%s", url, e)
+        _logger.error("yt-dlp instagram failed url=%s error=%s", url, e)
         return _scrape_web(url)
 
 
@@ -238,8 +258,7 @@ def _scrape_youtube(url: str) -> dict:
     """YouTube 영상 정보 추출 — yt-dlp(전체 설명)로 시도, 실패 시 oEmbed 폴백."""
     try:
         import yt_dlp
-        ydl_opts = {"skip_download": True, "quiet": True, "no_warnings": True}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(_ydl_base_opts()) as ydl:
             info = ydl.extract_info(url, download=False)
         title = info.get("title") or ""
         description = info.get("description") or ""
@@ -307,13 +326,10 @@ def _get_comments(url: str, source: str) -> str:
 def _get_youtube_comments(url: str) -> str:
     try:
         import yt_dlp
-        ydl_opts = {
-            "skip_download": True,
-            "quiet": True,
-            "no_warnings": True,
-            "getcomments": True,
-            "extractor_args": {"youtube": {"max_comments": ["20"]}},
-        }
+        ydl_opts = _ydl_base_opts(
+            getcomments=True,
+            extractor_args={"youtube": {"max_comments": ["20"]}},
+        )
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
         comments = info.get("comments") or []
@@ -431,15 +447,12 @@ def _get_captions(url: str) -> str:
         return ""
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        ydl_opts = {
-            "writeautomaticsub": True,
-            "writesubtitles": True,
-            "subtitleslangs": ["ko", "en"],
-            "skip_download": True,
-            "outtmpl": os.path.join(tmpdir, "%(id)s"),
-            "quiet": True,
-            "no_warnings": True,
-        }
+        ydl_opts = _ydl_base_opts(
+            writeautomaticsub=True,
+            writesubtitles=True,
+            subtitleslangs=["ko", "en"],
+            outtmpl=os.path.join(tmpdir, "%(id)s"),
+        )
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
@@ -474,6 +487,7 @@ def _whisper_stt(url: str) -> str:
             "outtmpl": audio_path + ".%(ext)s",
             "quiet": True,
             "no_warnings": True,
+            "logger": _YtDlpLogger(),
             # 5분까지만 다운로드 (Railway 무료 플랜 고려)
             "external_downloader_args": {"ffmpeg_i": ["-t", "300"]},
         }
