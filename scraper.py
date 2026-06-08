@@ -505,8 +505,6 @@ def _whisper_stt(url: str) -> str:
             "no_warnings": True,
             "ignore_no_formats_error": True,
             "logger": _YtDlpLogger(),
-            # 5분까지만 다운로드 (Railway 무료 플랜 고려)
-            "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3"}],
         }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
