@@ -101,26 +101,27 @@ def scrape(url: str) -> dict:
         except Exception as e:
             _logger.warning("stage1.5 failed url=%s error=%s", url, e)
 
-    # ── Stage 2: 이미지 OCR ─────────────────────────────────────────────────
+    # ── Stage 2+3: 이미지 OCR + 영상 STT 동시 실행 ──────────────────────────
+    ocr_text = ""
+    stt_text = ""
+
     if image_urls:
         try:
             from ai import describe_images
-            ocr = describe_images(image_urls[:3])
-            if ocr:
-                result["text"] = _join(result["text"], ocr)
-                if _is_sufficient(result["text"]):
-                    result["cover_image_url"] = cover_image_url
-                    return result
-        except Exception:
-            pass
+            ocr_text = describe_images(image_urls[:3]) or ""
+            _logger.info("stage2 ocr len=%d url=%s", len(ocr_text), url)
+        except Exception as e:
+            _logger.warning("stage2 ocr failed url=%s error=%s", url, e)
 
-    # ── Stage 3: 영상 STT ────────────────────────────────────────────────────
     try:
-        transcript = _transcribe(url)
-        if transcript:
-            result["text"] = _join(result["text"], transcript)
-    except Exception:
-        pass
+        stt_text = _transcribe(url) or ""
+        _logger.info("stage3 stt len=%d url=%s", len(stt_text), url)
+    except Exception as e:
+        _logger.warning("stage3 stt failed url=%s error=%s", url, e)
+
+    combined = _join(result["text"], ocr_text, stt_text)
+    if combined:
+        result["text"] = combined
 
     result["cover_image_url"] = cover_image_url
     return result
@@ -449,23 +450,35 @@ def _get_captions(url: str) -> str:
         return ""
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        ydl_opts = _ydl_base_opts(
-            writeautomaticsub=True,
-            writesubtitles=True,
-            subtitleslangs=["ko", "en"],
-            outtmpl=os.path.join(tmpdir, "%(id)s"),
-        )
+        # format 키 제외 — 자막만 필요하므로 format 검증 불필요
+        ydl_opts = {
+            "writeautomaticsub": True,
+            "writesubtitles": True,
+            "subtitleslangs": ["ko", "en"],
+            "skip_download": True,
+            "outtmpl": os.path.join(tmpdir, "%(id)s"),
+            "quiet": True,
+            "no_warnings": True,
+            "ignore_no_formats_error": True,
+            "logger": _YtDlpLogger(),
+        }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
-        except Exception:
+        except Exception as e:
+            _logger.warning("captions download failed url=%s error=%s", url, e)
             return ""
 
-        for fname in os.listdir(tmpdir):
+        files = os.listdir(tmpdir)
+        _logger.info("captions tmpdir files=%s", files)
+        for fname in files:
             if fname.endswith(".vtt") or fname.endswith(".srt"):
                 with open(os.path.join(tmpdir, fname), encoding="utf-8") as f:
-                    return _parse_subtitle(f.read())
+                    text = _parse_subtitle(f.read())
+                    _logger.info("captions found len=%d url=%s", len(text), url)
+                    return text
 
+    _logger.info("captions not found url=%s", url)
     return ""
 
 
@@ -473,6 +486,7 @@ def _whisper_stt(url: str) -> str:
     try:
         import faster_whisper
     except ImportError:
+        _logger.warning("faster_whisper not installed")
         return ""
 
     try:
@@ -489,21 +503,23 @@ def _whisper_stt(url: str) -> str:
             "outtmpl": audio_path + ".%(ext)s",
             "quiet": True,
             "no_warnings": True,
+            "ignore_no_formats_error": True,
             "logger": _YtDlpLogger(),
             # 5분까지만 다운로드 (Railway 무료 플랜 고려)
-            "external_downloader_args": {"ffmpeg_i": ["-t", "300"]},
+            "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3"}],
         }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
-        except Exception:
+        except Exception as e:
+            _logger.warning("whisper audio download failed url=%s error=%s", url, e)
             return ""
 
-        # 다운로드된 파일 찾기
         audio_file = next(
             (os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.startswith("audio.")),
             None,
         )
+        _logger.info("whisper audio_file=%s url=%s", audio_file, url)
         if not audio_file:
             return ""
 
@@ -513,8 +529,11 @@ def _whisper_stt(url: str) -> str:
                     "base", device="cpu", compute_type="int8"
                 )
             segments, _ = _whisper_model.transcribe(audio_file, beam_size=1)
-            return " ".join(seg.text.strip() for seg in segments)[:3000]
-        except Exception:
+            text = " ".join(seg.text.strip() for seg in segments)[:3000]
+            _logger.info("whisper stt len=%d url=%s", len(text), url)
+            return text
+        except Exception as e:
+            _logger.warning("whisper transcribe failed url=%s error=%s", url, e)
             return ""
 
 
