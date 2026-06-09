@@ -101,17 +101,28 @@ def scrape(url: str) -> dict:
         except Exception as e:
             _logger.warning("stage1.5 failed url=%s error=%s", url, e)
 
-    # ── Stage 2+3: 이미지 OCR + 영상 STT 동시 실행 ──────────────────────────
+    # ── Stage 2+3: 썸네일 OCR + 영상 프레임 OCR + STT 동시 실행 ─────────────
     ocr_text = ""
+    frame_ocr_text = ""
     stt_text = ""
 
     if image_urls:
         try:
             from ai import describe_images
             ocr_text = describe_images(image_urls[:3]) or ""
-            _logger.info("stage2 ocr len=%d url=%s", len(ocr_text), url)
+            _logger.info("stage2 thumbnail_ocr len=%d url=%s", len(ocr_text), url)
         except Exception as e:
-            _logger.warning("stage2 ocr failed url=%s error=%s", url, e)
+            _logger.warning("stage2 thumbnail_ocr failed url=%s error=%s", url, e)
+
+    if source in ("YouTube", "Instagram"):
+        try:
+            from ai import describe_frames
+            frames = _extract_video_frames(url)
+            if frames:
+                frame_ocr_text = describe_frames(frames) or ""
+                _logger.info("stage2 frame_ocr len=%d url=%s", len(frame_ocr_text), url)
+        except Exception as e:
+            _logger.warning("stage2 frame_ocr failed url=%s error=%s", url, e)
 
     try:
         stt_text = _transcribe(url) or ""
@@ -119,7 +130,7 @@ def scrape(url: str) -> dict:
     except Exception as e:
         _logger.warning("stage3 stt failed url=%s error=%s", url, e)
 
-    combined = _join(result["text"], ocr_text, stt_text)
+    combined = _join(result["text"], ocr_text, frame_ocr_text, stt_text)
     if combined:
         result["text"] = combined
 
@@ -426,6 +437,71 @@ def _extract_image_urls(soup: BeautifulSoup) -> list[str]:
             break
 
     return urls
+
+
+# ---------------------------------------------------------------------------
+# Stage 2.5: Video frame extraction
+# ---------------------------------------------------------------------------
+
+def _extract_video_frames(url: str) -> list[str]:
+    """비디오에서 5초 간격으로 프레임을 추출해 base64 JPEG 리스트 반환 (최대 6장)."""
+    import subprocess
+    try:
+        import yt_dlp
+    except ImportError:
+        return []
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        video_path = os.path.join(tmpdir, "video")
+        ydl_opts = {
+            "format": "worst[ext=mp4]/worst/best[height<=360]/best",
+            "outtmpl": video_path + ".%(ext)s",
+            "quiet": True,
+            "no_warnings": True,
+            "ignore_no_formats_error": True,
+            "logger": _YtDlpLogger(),
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+        except Exception as e:
+            _logger.warning("frame video download failed url=%s error=%s", url, e)
+            return []
+
+        video_file = next(
+            (os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.startswith("video.")),
+            None,
+        )
+        if not video_file:
+            _logger.warning("frame video file not found url=%s", url)
+            return []
+
+        frames_dir = os.path.join(tmpdir, "frames")
+        os.makedirs(frames_dir)
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-i", video_file,
+                    "-vf", "fps=1/5,scale=640:-1",
+                    "-frames:v", "6",
+                    os.path.join(frames_dir, "frame_%03d.jpg"),
+                ],
+                capture_output=True, timeout=60, check=False,
+            )
+        except Exception as e:
+            _logger.warning("ffmpeg frame extract failed url=%s error=%s", url, e)
+            return []
+
+        frames = []
+        for fname in sorted(os.listdir(frames_dir)):
+            try:
+                with open(os.path.join(frames_dir, fname), "rb") as f:
+                    frames.append(base64.b64encode(f.read()).decode())
+            except Exception:
+                pass
+
+        _logger.info("extracted %d frames url=%s", len(frames), url)
+        return frames
 
 
 # ---------------------------------------------------------------------------

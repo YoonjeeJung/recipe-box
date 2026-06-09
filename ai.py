@@ -153,3 +153,32 @@ def describe_images(image_urls: list[str]) -> str:
         messages=[{"role": "user", "content": content}],
     )
     return response.content[0].text.strip()
+
+
+def describe_frames(frames_b64: list[str]) -> str:
+    """비디오 프레임(base64 JPEG) 목록에서 레시피/텍스트 추출."""
+    if not frames_b64:
+        return ""
+
+    content: list[dict] = []
+    for b64 in frames_b64[:6]:
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": b64},
+        })
+
+    content.append({
+        "type": "text",
+        "text": (
+            "비디오 프레임들에서 텍스트와 핵심 내용을 추출해줘. "
+            "레시피, 재료명과 분량, 조리 순서, 음식명 등 구체적 정보를 빠짐없이 서술해."
+        ),
+    })
+
+    client = _get_client()
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": content}],
+    )
+    return response.content[0].text.strip()
