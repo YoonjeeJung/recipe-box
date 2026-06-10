@@ -201,3 +201,11 @@ async def debug_instagram_raw(req: SaveRequest):
         "ig_api_images_count": len([u for u in api_images if u]),
         "ig_api_first_image": (api_images[0][:80] + "...") if api_images and api_images[0] else "",
     }
+
+
+if __name__ == "__main__":
+    import os
+    import uvicorn
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
+
