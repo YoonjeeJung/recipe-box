@@ -19,6 +19,21 @@ HEADERS = {
 # 이 길이 이상이면 다음 단계(이미지/영상) 건너뜀
 SUFFICIENT_TEXT_LEN = 150
 
+_RECIPE_UNITS = re.compile(
+    r'\d+\s*(g|ml|kg|l|컵|큰술|작은술|개|장|마리|줌|꼬집|tbsp|tsp|cup|oz|lb)',
+    re.IGNORECASE,
+)
+_RECIPE_KEYWORDS = re.compile(
+    r'재료|만드는\s*법|조리법|레시피|볶다|볶아|끓이다|끓여|섞다|섞어|넣다|넣어'
+    r'|ingredient|recipe|instructions?|directions?',
+    re.IGNORECASE,
+)
+
+
+def _looks_like_recipe(text: str) -> bool:
+    """텍스트에 실제 레시피 내용(재료 단위 or 조리 키워드)이 있는지 판단."""
+    return bool(_RECIPE_UNITS.search(text) or _RECIPE_KEYWORDS.search(text))
+
 _RETRYABLE = (requests.ConnectionError, requests.Timeout)
 
 # faster-whisper 모델은 첫 호출 시 한 번만 로드
@@ -84,7 +99,17 @@ def scrape(url: str) -> dict:
     cover_image_url: str = image_urls[0] if image_urls else ""
 
     # 카드뉴스(캐러셀)는 이미지에 내용이 있으므로 텍스트가 충분해도 OCR 진행
-    if _is_sufficient(result["text"]) and not is_carousel:
+    # 유튜브/인스타는 레시피가 영상 안에 있을 수 있으므로 실제 레시피 내용이 있을 때만 스킵
+    def _can_skip(text: str) -> bool:
+        if is_carousel:
+            return False
+        if not _is_sufficient(text):
+            return False
+        if source in ("YouTube", "Instagram"):
+            return _looks_like_recipe(text)
+        return True
+
+    if _can_skip(result["text"]):
         result["cover_image_url"] = cover_image_url
         return result
 
@@ -95,7 +120,7 @@ def scrape(url: str) -> dict:
             _logger.info("stage1.5 comments len=%d source=%s url=%s", len(comments), source, url)
             if comments:
                 result["text"] = _join(result["text"], comments)
-                if _is_sufficient(result["text"]) and not is_carousel:
+                if _can_skip(result["text"]):
                     result["cover_image_url"] = cover_image_url
                     return result
         except Exception as e:
