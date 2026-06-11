@@ -439,6 +439,16 @@ def _extract_image_urls(soup: BeautifulSoup) -> list[str]:
     return urls
 
 
+def _ig_http_headers(url: str) -> dict:
+    """Instagram URL이면 session_id 쿠키 헤더 반환, 아니면 빈 dict."""
+    if "instagram.com" not in urlparse(url).netloc:
+        return {}
+    session_id = os.environ.get("INSTAGRAM_SESSION_ID", "")
+    if not session_id:
+        return {}
+    return {"Cookie": f"sessionid={session_id}", "User-Agent": HEADERS["User-Agent"]}
+
+
 # ---------------------------------------------------------------------------
 # Stage 2.5: Video frame extraction
 # ---------------------------------------------------------------------------
@@ -461,6 +471,9 @@ def _extract_video_frames(url: str) -> list[str]:
             "ignore_no_formats_error": True,
             "logger": _YtDlpLogger(),
         }
+        headers = _ig_http_headers(url)
+        if headers:
+            ydl_opts["http_headers"] = headers
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
@@ -538,6 +551,9 @@ def _get_captions(url: str) -> str:
             "ignore_no_formats_error": True,
             "logger": _YtDlpLogger(),
         }
+        headers = _ig_http_headers(url)
+        if headers:
+            ydl_opts["http_headers"] = headers
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
@@ -582,6 +598,9 @@ def _whisper_stt(url: str) -> str:
             "ignore_no_formats_error": True,
             "logger": _YtDlpLogger(),
         }
+        headers = _ig_http_headers(url)
+        if headers:
+            ydl_opts["http_headers"] = headers
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
