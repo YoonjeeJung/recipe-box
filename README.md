@@ -57,7 +57,7 @@ cp .env.example .env
 
 ```env
 NOTION_TOKEN=ntn_xxxxxxxxxxxxxxxxxxxxxx
-NOTION_DB_ID=10952a5c6d374bb6b44c9a9c68e6dd3c
+NOTION_DB_ID=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxxxx
 ```
 
