@@ -5,5 +5,5 @@ requests==2.32.3
 beautifulsoup4==4.12.3
 anthropic==0.40.0
 notion-client==2.2.1
-yt-dlp==2024.11.18
+yt-dlp==2026.7.4
 faster-whisper==1.1.0
