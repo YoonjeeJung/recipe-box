@@ -352,13 +352,11 @@ def _scrape_oembed(url: str, template: str) -> dict:
 
 
 def _get_comments(url: str, source: str) -> str:
-    """YouTube/Instagram 고정댓글·인기댓글 텍스트 반환 (상위 3개)."""
+    """YouTube/Instagram 고정댓글·작성자 댓글 텍스트 반환."""
     if source == "YouTube":
         return _get_youtube_comments(url)
     if source == "Instagram":
-        session_id = os.environ.get("INSTAGRAM_SESSION_ID", "")
-        if session_id:
-            return _get_instagram_comments(url, session_id)
+        return _get_instagram_comments(url)
     return ""
 
 
@@ -382,32 +380,36 @@ def _get_youtube_comments(url: str) -> str:
         return ""
 
 
-def _get_instagram_comments(url: str, session_id: str) -> str:
-    media_id = _instagram_media_id(url)
-    if not media_id:
-        return ""
-    api_url = (
-        f"https://www.instagram.com/api/v1/media/{media_id}/comments/"
-        "?can_support_threading=true&permalink_enabled=false"
-    )
-    headers = {
-        "Cookie": f"sessionid={session_id}",
-        "User-Agent": "Instagram 219.0.0.12.117 Android",
-        "Accept": "*/*",
-        "X-IG-App-ID": "936619743392459",
-    }
+def _get_instagram_comments(url: str) -> str:
+    """yt-dlp로 댓글 수집 — 세션 없이도 동작. 고정댓글 + 작성자 본인 댓글 사용.
+
+    레시피가 고정 안 된 작성자 댓글에 있는 경우가 많아 본인 댓글도 포함한다.
+    """
     try:
-        resp = requests.get(api_url, headers=headers, timeout=10)
-        _logger.info("instagram comments api status=%d url=%s", resp.status_code, url)
-        if resp.status_code != 200:
-            return ""
-        data = resp.json()
-        comments = data.get("comments") or []
-        _logger.info("instagram comments total=%d", len(comments))
-        # 고정댓글만 사용
-        pinned = [c.get("text", "") for c in comments if c.get("is_pinned_comment") and c.get("text")]
-        _logger.info("instagram pinned=%d", len(pinned))
-        return "\n\n".join(pinned)
+        import yt_dlp
+        ydl_opts = _ydl_base_opts(getcomments=True)
+        headers = _ig_http_headers(url)
+        if headers:
+            ydl_opts["http_headers"] = headers
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        comments = info.get("comments") or []
+        _logger.info("instagram comments total=%d url=%s", len(comments), url)
+
+        uploader_id = str(info.get("uploader_id") or "")
+        channel = info.get("channel") or ""
+
+        def _keep(c: dict) -> bool:
+            if c.get("is_pinned"):
+                return True
+            return bool(
+                (uploader_id and str(c.get("author_id") or "") == uploader_id)
+                or (channel and c.get("author") == channel)
+            )
+
+        picked = [c.get("text", "") for c in comments if _keep(c) and c.get("text")]
+        _logger.info("instagram pinned/author comments=%d", len(picked))
+        return "\n\n".join(picked[:5])
     except Exception as e:
         _logger.warning("instagram comments failed url=%s error=%s", url, e)
         return ""
