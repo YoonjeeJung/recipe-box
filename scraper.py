@@ -66,6 +66,26 @@ def _ydl_base_opts(**extra) -> dict:
     }
 
 
+def _ydl_run(url: str, ydl_opts: dict, action):
+    """yt-dlp 실행 — 세션 쿠키로 실패하면 쿠키 없이 1회 재시도.
+
+    만료된 INSTAGRAM_SESSION_ID를 보내면 Instagram이 로그인 페이지로 리다이렉트를
+    반복해 "302 redirect loop" 에러가 난다. 공개 게시물은 익명으로도 접근되므로
+    쿠키 없이 재시도하면 대부분 복구된다.
+    """
+    import yt_dlp
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            return action(ydl)
+    except Exception:
+        if "http_headers" not in ydl_opts:
+            raise
+        _logger.warning("yt-dlp failed with session cookie, retrying anonymously url=%s", url)
+        retry_opts = {k: v for k, v in ydl_opts.items() if k != "http_headers"}
+        with yt_dlp.YoutubeDL(retry_opts) as ydl:
+            return action(ydl)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -228,15 +248,13 @@ def _scrape_instagram(url: str) -> dict:
     session_id = os.environ.get("INSTAGRAM_SESSION_ID", "")
 
     try:
-        import yt_dlp
         ydl_opts = _ydl_base_opts()
         if session_id:
             ydl_opts["http_headers"] = {
                 "Cookie": f"sessionid={session_id}",
                 "User-Agent": HEADERS["User-Agent"],
             }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        info = _ydl_run(url, ydl_opts, lambda ydl: ydl.extract_info(url, download=False))
 
         is_carousel = info.get("_type") == "playlist"
         caption = info.get("description") or ""
@@ -386,13 +404,11 @@ def _get_instagram_comments(url: str) -> str:
     레시피가 고정 안 된 작성자 댓글에 있는 경우가 많아 본인 댓글도 포함한다.
     """
     try:
-        import yt_dlp
         ydl_opts = _ydl_base_opts(getcomments=True)
         headers = _ig_http_headers(url)
         if headers:
             ydl_opts["http_headers"] = headers
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        info = _ydl_run(url, ydl_opts, lambda ydl: ydl.extract_info(url, download=False))
         comments = info.get("comments") or []
         _logger.info("instagram comments total=%d url=%s", len(comments), url)
 
@@ -502,8 +518,7 @@ def _extract_video_frames(url: str) -> list[str]:
         if headers:
             ydl_opts["http_headers"] = headers
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+            _ydl_run(url, ydl_opts, lambda ydl: ydl.download([url]))
         except Exception as e:
             _logger.warning("frame video download failed url=%s error=%s", url, e)
             return []
@@ -582,8 +597,7 @@ def _get_captions(url: str) -> str:
         if headers:
             ydl_opts["http_headers"] = headers
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+            _ydl_run(url, ydl_opts, lambda ydl: ydl.download([url]))
         except Exception as e:
             _logger.warning("captions download failed url=%s error=%s", url, e)
             return ""
@@ -629,8 +643,7 @@ def _whisper_stt(url: str) -> str:
         if headers:
             ydl_opts["http_headers"] = headers
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+            _ydl_run(url, ydl_opts, lambda ydl: ydl.download([url]))
         except Exception as e:
             _logger.warning("whisper audio download failed url=%s error=%s", url, e)
             return ""
