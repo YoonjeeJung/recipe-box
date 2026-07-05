@@ -1,7 +1,15 @@
+import logging
+import mimetypes
 import os
+
+import requests
 from notion_client import Client
 
 _client = None
+
+_logger = logging.getLogger(__name__)
+
+NOTION_VERSION = "2022-06-28"
 
 
 def _get_client() -> Client:
@@ -54,7 +62,58 @@ def _callout(text: str, emoji: str = "💡") -> dict:
     }
 
 
+def _upload_image(image_url: str) -> str:
+    """이미지를 다운로드해 Notion File Upload API로 업로드, file_upload id 반환.
+
+    Instagram CDN URL은 서명이 걸려 있어 며칠 뒤 만료된다. external 링크로 넣으면
+    노션 페이지의 이미지가 깨지므로 노션 저장소에 직접 올린다. 실패 시 빈 문자열.
+    """
+    try:
+        resp = requests.get(image_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+        if not content_type.startswith("image/"):
+            return ""
+        ext = mimetypes.guess_extension(content_type) or ".jpg"
+        filename = f"cover{ext}"
+
+        auth = {
+            "Authorization": f"Bearer {os.environ['NOTION_TOKEN']}",
+            "Notion-Version": NOTION_VERSION,
+        }
+        create = requests.post(
+            "https://api.notion.com/v1/file_uploads",
+            headers={**auth, "Content-Type": "application/json"},
+            json={"mode": "single_part", "filename": filename, "content_type": content_type},
+            timeout=15,
+        )
+        create.raise_for_status()
+        upload = create.json()
+        send = requests.post(
+            upload["upload_url"],
+            headers=auth,
+            files={"file": (filename, resp.content, content_type)},
+            timeout=30,
+        )
+        send.raise_for_status()
+        return upload["id"]
+    except Exception as e:
+        _logger.warning("notion image upload failed url=%s error=%s", image_url[:120], e)
+        return ""
+
+
 def _image_block(url: str) -> dict:
+    file_upload_id = _upload_image(url)
+    if file_upload_id:
+        return {
+            "object": "block",
+            "type": "image",
+            "image": {
+                "type": "file_upload",
+                "file_upload": {"id": file_upload_id},
+            },
+        }
+    # 업로드 실패 시 external 폴백 (만료될 수 있음)
     return {
         "object": "block",
         "type": "image",
