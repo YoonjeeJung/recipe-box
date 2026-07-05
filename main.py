@@ -107,15 +107,6 @@ async def health():
     return {"status": "ok"}
 
 
-@app.get("/debug/instagram")
-async def debug_instagram():
-    """인스타 세션 설정 확인용 엔드포인트."""
-    return {
-        "session_id_set": bool(os.environ.get("INSTAGRAM_SESSION_ID")),
-        "username": os.environ.get("INSTAGRAM_USERNAME", ""),
-    }
-
-
 class ScrapeDebugResponse(BaseModel):
     text: str
     text_length: int
@@ -136,71 +127,6 @@ async def debug_scrape(req: SaveRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/debug/instagram-raw")
-async def debug_instagram_raw(req: SaveRequest):
-    """yt-dlp + Instagram API 동작 확인용."""
-    import os as _os
-    import requests as _requests
-    import yt_dlp
-    from urllib.parse import urlparse as _up
-
-    url = str(req.url)
-    session_id = _os.environ.get("INSTAGRAM_SESSION_ID", "")
-    ydl_opts = {"skip_download": True, "quiet": True, "no_warnings": True}
-    if session_id:
-        ydl_opts["http_headers"] = {
-            "Cookie": f"sessionid={session_id}",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-        }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            entries = list(info.get("entries") or [])
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"yt-dlp error: {e}")
-
-    # Instagram 내부 API 직접 테스트
-    api_status = None
-    api_images = []
-    if session_id:
-        path = _up(url).path
-        parts = [p for p in path.split("/") if p]
-        shortcode = parts[1] if len(parts) >= 2 else ""
-        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-        media_id = 0
-        for char in shortcode:
-            if char in alphabet:
-                media_id = media_id * 64 + alphabet.index(char)
-        api_url = f"https://www.instagram.com/api/v1/media/{media_id}/info/"
-        try:
-            resp = _requests.get(api_url, headers={
-                "Cookie": f"sessionid={session_id}",
-                "User-Agent": "Instagram 219.0.0.12.117 Android",
-                "X-IG-App-ID": "936619743392459",
-            }, timeout=10)
-            api_status = resp.status_code
-            if resp.status_code == 200:
-                item = (resp.json().get("items") or [{}])[0]
-                if item.get("carousel_media"):
-                    api_images = [
-                        m.get("image_versions2", {}).get("candidates", [{}])[0].get("url", "")
-                        for m in item["carousel_media"]
-                    ]
-                else:
-                    candidates = item.get("image_versions2", {}).get("candidates", [])
-                    api_images = [candidates[0]["url"]] if candidates else []
-        except Exception as ex:
-            api_status = f"error: {ex}"
-
-    return {
-        "yt_dlp_type": info.get("_type"),
-        "yt_dlp_entries": len(entries),
-        "ig_api_status": api_status,
-        "ig_api_images_count": len([u for u in api_images if u]),
-        "ig_api_first_image": (api_images[0][:80] + "...") if api_images and api_images[0] else "",
-    }
 
 
 if __name__ == "__main__":
