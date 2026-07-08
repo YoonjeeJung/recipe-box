@@ -66,6 +66,7 @@ def _ydl_base_opts(**extra) -> dict:
     }
 
 
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -179,63 +180,11 @@ def _scrape_text(url: str, source: str) -> dict:
     return _scrape_web(url)
 
 
-def _instagram_media_id(url: str) -> int:
-    """Instagram URL의 shortcode를 media_id(int)로 변환."""
-    path = urlparse(url).path
-    parts = [p for p in path.split("/") if p]
-    shortcode = parts[1] if len(parts) >= 2 else ""
-    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-    media_id = 0
-    for char in shortcode:
-        if char in alphabet:
-            media_id = media_id * 64 + alphabet.index(char)
-    return media_id
-
-
-def _instagram_carousel_images(url: str, session_id: str) -> list[str]:
-    """Instagram 내부 API로 캐러셀 슬라이드 이미지 URL 직접 추출."""
-    media_id = _instagram_media_id(url)
-    if not media_id:
-        return []
-
-    api_url = f"https://www.instagram.com/api/v1/media/{media_id}/info/"
-    headers = {
-        "Cookie": f"sessionid={session_id}",
-        "User-Agent": "Instagram 219.0.0.12.117 Android",
-        "Accept": "*/*",
-        "X-IG-App-ID": "936619743392459",
-    }
-    try:
-        resp = requests.get(api_url, headers=headers, timeout=10)
-        if resp.status_code != 200:
-            return []
-        item = (resp.json().get("items") or [{}])[0]
-        if item.get("carousel_media"):
-            urls = []
-            for m in item["carousel_media"]:
-                candidates = m.get("image_versions2", {}).get("candidates", [])
-                if candidates:
-                    urls.append(candidates[0]["url"])
-            return urls[:5]
-        candidates = item.get("image_versions2", {}).get("candidates", [])
-        return [candidates[0]["url"]] if candidates else []
-    except Exception:
-        return []
-
-
 def _scrape_instagram(url: str) -> dict:
-    """yt-dlp로 인스타 캡션 추출 + Instagram API로 캐러셀 이미지 수집."""
-    session_id = os.environ.get("INSTAGRAM_SESSION_ID", "")
-
+    """yt-dlp로 인스타 캡션·이미지 추출 — 공개 게시물은 로그인 없이 접근 가능."""
     try:
         import yt_dlp
-        ydl_opts = _ydl_base_opts()
-        if session_id:
-            ydl_opts["http_headers"] = {
-                "Cookie": f"sessionid={session_id}",
-                "User-Agent": HEADERS["User-Agent"],
-            }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(_ydl_base_opts()) as ydl:
             info = ydl.extract_info(url, download=False)
 
         is_carousel = info.get("_type") == "playlist"
@@ -243,15 +192,21 @@ def _scrape_instagram(url: str) -> dict:
         uploader = info.get("uploader") or ""
         title = info.get("title") or uploader
 
-        # 캐러셀이면 Instagram API로 슬라이드 이미지 직접 수집
-        if is_carousel and session_id:
-            thumbnails = _instagram_carousel_images(url, session_id)
-        else:
-            thumbnail = info.get("thumbnail") or ""
+        def _best_thumbnail(entry: dict) -> str:
+            thumbnail = entry.get("thumbnail") or ""
             if not thumbnail:
-                thumbs = info.get("thumbnails") or []
+                thumbs = entry.get("thumbnails") or []
                 thumbnail = thumbs[-1].get("url", "") if thumbs else ""
-            thumbnails = [thumbnail] if thumbnail else []
+            return thumbnail
+
+        # 캐러셀(카드뉴스)이면 각 슬라이드의 썸네일 수집
+        if is_carousel:
+            entries = list(info.get("entries") or [])
+            thumbnails = [t for t in (_best_thumbnail(e) for e in entries if e) if t][:5]
+            if not thumbnails:
+                thumbnails = [t for t in [_best_thumbnail(info)] if t]
+        else:
+            thumbnails = [t for t in [_best_thumbnail(info)] if t]
 
         text = "\n".join(filter(None, [title, caption]))
         _logger.info("yt-dlp instagram ok url=%s is_carousel=%s caption_len=%d images=%d",
@@ -387,11 +342,7 @@ def _get_instagram_comments(url: str) -> str:
     """
     try:
         import yt_dlp
-        ydl_opts = _ydl_base_opts(getcomments=True)
-        headers = _ig_http_headers(url)
-        if headers:
-            ydl_opts["http_headers"] = headers
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(_ydl_base_opts(getcomments=True)) as ydl:
             info = ydl.extract_info(url, download=False)
         comments = info.get("comments") or []
         _logger.info("instagram comments total=%d url=%s", len(comments), url)
@@ -466,15 +417,6 @@ def _extract_image_urls(soup: BeautifulSoup) -> list[str]:
     return urls
 
 
-def _ig_http_headers(url: str) -> dict:
-    """Instagram URL이면 session_id 쿠키 헤더 반환, 아니면 빈 dict."""
-    if "instagram.com" not in urlparse(url).netloc:
-        return {}
-    session_id = os.environ.get("INSTAGRAM_SESSION_ID", "")
-    if not session_id:
-        return {}
-    return {"Cookie": f"sessionid={session_id}", "User-Agent": HEADERS["User-Agent"]}
-
 
 # ---------------------------------------------------------------------------
 # Stage 2.5: Video frame extraction
@@ -498,9 +440,6 @@ def _extract_video_frames(url: str) -> list[str]:
             "ignore_no_formats_error": True,
             "logger": _YtDlpLogger(),
         }
-        headers = _ig_http_headers(url)
-        if headers:
-            ydl_opts["http_headers"] = headers
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
@@ -578,9 +517,6 @@ def _get_captions(url: str) -> str:
             "ignore_no_formats_error": True,
             "logger": _YtDlpLogger(),
         }
-        headers = _ig_http_headers(url)
-        if headers:
-            ydl_opts["http_headers"] = headers
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
@@ -625,9 +561,6 @@ def _whisper_stt(url: str) -> str:
             "ignore_no_formats_error": True,
             "logger": _YtDlpLogger(),
         }
-        headers = _ig_http_headers(url)
-        if headers:
-            ydl_opts["http_headers"] = headers
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
