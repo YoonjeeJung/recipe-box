@@ -20,19 +20,20 @@ HEADERS = {
 SUFFICIENT_TEXT_LEN = 150
 
 _RECIPE_UNITS = re.compile(
-    r'\d+\s*(g|ml|kg|l|컵|큰술|작은술|개|장|마리|줌|꼬집|tbsp|tsp|cup|oz|lb)',
-    re.IGNORECASE,
-)
-_RECIPE_KEYWORDS = re.compile(
-    r'재료|만드는\s*법|조리법|레시피|볶다|볶아|끓이다|끓여|섞다|섞어|넣다|넣어'
-    r'|ingredient|recipe|instructions?|directions?',
+    r'\d+\s*(g|ml|kg|l|컵|큰술|작은술|스푼|개|장|마리|줌|꼬집|알|쪽|모|묶음|봉|팩|캔|작'
+    r'|tbsp|tsp|cup|oz|lb|Tbs|T|t)\b',
     re.IGNORECASE,
 )
 
 
 def _looks_like_recipe(text: str) -> bool:
-    """텍스트에 실제 레시피 내용(재료 단위 or 조리 키워드)이 있는지 판단."""
-    return bool(_RECIPE_UNITS.search(text) or _RECIPE_KEYWORDS.search(text))
+    """텍스트에 실제 레시피 내용(계량 표기)이 있는지 판단.
+
+    '레시피' 같은 키워드만으로 판단하면 "recipe is in my bio" 류의 캡션까지
+    레시피로 오인해 영상 분석(OCR/STT)을 건너뛰므로, 분량·계량 표기가
+    있을 때만 실제 레시피가 담긴 것으로 본다.
+    """
+    return bool(_RECIPE_UNITS.search(text))
 
 _RETRYABLE = (requests.ConnectionError, requests.Timeout)
 
