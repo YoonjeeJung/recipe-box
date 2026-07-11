@@ -110,20 +110,22 @@ def scrape(url: str) -> dict:
             return _looks_like_recipe(text)
         return True
 
-    if _can_skip(result["text"]):
+    caption_text = result["text"]
+
+    if _can_skip(caption_text):
         result["cover_image_url"] = cover_image_url
         return result
 
     # ── Stage 1.5: 고정댓글 (YouTube Shorts / Instagram Reels) ─────────────
+    comments_text = ""
     if source in ("YouTube", "Instagram"):
         try:
-            comments = _get_comments(url, source)
-            _logger.info("stage1.5 comments len=%d source=%s url=%s", len(comments), source, url)
-            if comments:
-                result["text"] = _join(result["text"], comments)
-                if _can_skip(result["text"]):
-                    result["cover_image_url"] = cover_image_url
-                    return result
+            comments_text = _get_comments(url, source)
+            _logger.info("stage1.5 comments len=%d source=%s url=%s", len(comments_text), source, url)
+            if comments_text and _can_skip(_join(caption_text, comments_text)):
+                result["text"] = _join(caption_text, _label("고정·작성자 댓글", comments_text))
+                result["cover_image_url"] = cover_image_url
+                return result
         except Exception as e:
             _logger.warning("stage1.5 failed url=%s error=%s", url, e)
 
@@ -156,7 +158,14 @@ def scrape(url: str) -> dict:
     except Exception as e:
         _logger.warning("stage3 stt failed url=%s error=%s", url, e)
 
-    combined = _join(result["text"], ocr_text, frame_ocr_text, stt_text)
+    # 소스별 라벨을 붙여 AI가 출처(정확한 원문 vs 인식 오류 가능)를 구분하게 함
+    combined = _join(
+        caption_text,
+        _label("고정·작성자 댓글", comments_text),
+        _label("썸네일·이미지 텍스트", ocr_text),
+        _label("영상 화면 텍스트", frame_ocr_text),
+        _label("음성 전사", stt_text),
+    )
     if combined:
         result["text"] = combined
 
@@ -423,7 +432,11 @@ def _extract_image_urls(soup: BeautifulSoup) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _extract_video_frames(url: str) -> list[str]:
-    """비디오에서 5초 간격으로 프레임을 추출해 base64 JPEG 리스트 반환 (최대 6장)."""
+    """비디오에서 일정 간격으로 프레임을 추출해 base64 JPEG 리스트 반환 (최대 12장).
+
+    레시피 릴스는 재료·순서 자막이 영상 전체에 걸쳐 나오므로 앞부분만 캡처하면
+    뒷부분 자막을 놓친다. 1~2분 영상 전체가 커버되도록 간격×장수를 잡는다.
+    """
     import subprocess
     try:
         import yt_dlp
@@ -462,7 +475,7 @@ def _extract_video_frames(url: str) -> list[str]:
                 [
                     "ffmpeg", "-i", video_file,
                     "-vf", "fps=1/5,scale=640:-1",
-                    "-frames:v", "6",
+                    "-frames:v", "12",
                     os.path.join(frames_dir, "frame_%03d.jpg"),
                 ],
                 capture_output=True, timeout=60, check=False,
@@ -578,11 +591,20 @@ def _whisper_stt(url: str) -> str:
 
         try:
             if _whisper_model is None:
+                # WHISPER_MODEL=small 로 올리면 한국어 인식률 향상 (메모리·속도 트레이드오프)
+                model_size = os.environ.get("WHISPER_MODEL", "base")
                 _whisper_model = faster_whisper.WhisperModel(
-                    "base", device="cpu", compute_type="int8"
+                    model_size, device="cpu", compute_type="int8"
                 )
-            segments, _ = _whisper_model.transcribe(audio_file, beam_size=1)
+            # vad_filter: 배경음악만 있는 릴스에서 가사를 오인식하는 것 방지
+            segments, seg_info = _whisper_model.transcribe(
+                audio_file, beam_size=1, vad_filter=True
+            )
             text = " ".join(seg.text.strip() for seg in segments)[:3000]
+            _logger.info(
+                "whisper lang=%s prob=%.2f url=%s",
+                seg_info.language, seg_info.language_probability, url,
+            )
             _logger.info("whisper stt len=%d url=%s", len(text), url)
             return text
         except Exception as e:
@@ -622,6 +644,11 @@ def _is_sufficient(text: str) -> bool:
 
 def _join(*parts: str) -> str:
     return "\n".join(p for p in parts if p).strip()
+
+
+def _label(name: str, text: str) -> str:
+    """소스 구분 라벨 — AI 분석 시 출처별 신뢰도 판단용."""
+    return f"[{name}]\n{text}" if text else ""
 
 
 def _get_with_retry(url: str, *, timeout: int = 10, **kwargs) -> requests.Response:
