@@ -44,14 +44,18 @@ _logger = logging.getLogger(__name__)
 
 
 class _YtDlpLogger:
-    """yt-dlp 콘솔 출력을 Python logger(DEBUG)로 전환 — Railway 로그 오염 방지."""
+    """yt-dlp 콘솔 출력을 Python logger로 전환.
+
+    경고·에러는 실제 장애 진단에 필수(봇 차단, JS 런타임 부재 등)라
+    Railway 로그에 보이는 레벨로 남긴다.
+    """
     def debug(self, msg):
         if msg.startswith("[debug]"):
             return
         _logger.debug("yt-dlp: %s", msg)
     def info(self, msg): _logger.debug("yt-dlp: %s", msg)
-    def warning(self, msg): _logger.debug("yt-dlp warn: %s", msg)
-    def error(self, msg): _logger.debug("yt-dlp err: %s", msg)
+    def warning(self, msg): _logger.info("yt-dlp warn: %s", msg)
+    def error(self, msg): _logger.warning("yt-dlp err: %s", msg)
 
 
 def _ydl_base_opts(**extra) -> dict:
@@ -336,10 +340,15 @@ def _get_youtube_comments(url: str) -> str:
             info = ydl.extract_info(url, download=False)
         comments = info.get("comments") or []
         _logger.info("youtube comments total=%d url=%s", len(comments), url)
-        # 고정댓글만 사용
-        pinned = [c.get("text", "") for c in comments if c.get("is_pinned") and c.get("text")]
-        _logger.info("youtube pinned=%d", len(pinned))
-        return "\n\n".join(pinned)
+        # 고정댓글 + 작성자 본인 댓글 (레시피를 고정 안 하고 댓글로 다는 경우 대비)
+        picked = [
+            c.get("text", "") for c in comments
+            if (c.get("is_pinned") or c.get("author_is_uploader"))
+            and c.get("parent") in (None, "root")
+            and c.get("text")
+        ]
+        _logger.info("youtube pinned/author=%d", len(picked))
+        return "\n\n".join(picked[:5])
     except Exception as e:
         _logger.warning("youtube comments failed url=%s error=%s", url, e)
         return ""

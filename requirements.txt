@@ -5,5 +5,6 @@ requests==2.32.3
 beautifulsoup4==4.12.3
 anthropic==0.40.0
 notion-client==2.2.1
-yt-dlp==2026.7.4
+# default: EJS(JS 챌린지 해결) 포함 / curl-cffi: 브라우저 TLS 위장 — 데이터센터 IP 봇 차단 완화
+yt-dlp[default,curl-cffi]==2026.7.4
 faster-whisper==1.1.0
